@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import random
+import time
 import uuid
 from typing import Any
 
@@ -99,11 +101,15 @@ def item_to_chunk(item: dict[str, Any], rank: int) -> RetrievedChunk:
     )
 
 
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+
 class FactivaRetrievalClient:
     """Factiva Retrieval API — contextual news chunks for RAG."""
 
-    def __init__(self, auth: FactivaAuth | None = None) -> None:
+    def __init__(self, auth: FactivaAuth | None = None, max_retries: int = 2) -> None:
         self.auth = auth or FactivaAuth(account="rag")
+        self.max_retries = max_retries
 
     def retrieve(
         self,
@@ -161,9 +167,18 @@ class FactivaRetrievalClient:
                 token = self.auth.get_access_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
                 resp = client.post(url, headers=headers, json=payload)
+
+            # The semantic service returns sporadic 5xx/429; retry with jittered backoff.
+            for attempt in range(1, self.max_retries + 1):
+                if resp.status_code not in RETRY_STATUS:
+                    break
+                time.sleep(min(4.0, 0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.3))
+                resp = client.post(url, headers=headers, json=payload)
+
             if resp.status_code >= 400:
                 raise FactivaRetrieveError(
-                    f"Retrieve failed ({resp.status_code}): {resp.text[:800]}"
+                    f"Retrieve failed ({resp.status_code}) for query {query!r}: "
+                    f"{resp.text[:400]}"
                 )
             body = resp.json()
 

@@ -44,6 +44,13 @@ def retrieve_cmd(
     intent: Optional[str] = typer.Option(None, help="Force Factiva intent name"),
     out: Optional[Path] = typer.Option(None, help="Write ranked JSON"),
     raw: bool = typer.Option(False, help="Single Factiva call, skip multi-query quality stack"),
+    variants: int = typer.Option(3, min=1, max=6, help="Query variants to issue in parallel"),
+    diversity: bool = typer.Option(
+        True, "--diversity/--no-diversity", help="Ablation: source cap + MMR"
+    ),
+    entity_gate: bool = typer.Option(
+        True, "--entity-gate/--no-entity-gate", help="Ablation: drop off-entity candidates"
+    ),
 ) -> None:
     """Primary command: high-quality Factiva retrieval (no OpenAI)."""
     forced: SearchIntent | None = SearchIntent(intent) if intent else None
@@ -53,20 +60,39 @@ def retrieve_cmd(
         hits = FactivaRetrievalClient().retrieve(
             q, limit=top_k, days_range=days_range or "Last6Months"
         )
-        console.print(f"[dim]raw factiva[/dim] intent≈{detect_intent(q).value} n={len(hits)}\n")
+        console.print(
+            f"[dim]baseline: single Factiva call, API order only (no quality scoring)[/dim]\n"
+            f"intent≈{detect_intent(q).value}  n={len(hits)}\n"
+        )
         payload = []
         for h in hits:
-            _print_hit(h)
-            payload.append({"rank": h.rank, "score": h.score, **h.chunk.model_dump()})
+            _print_hit(h, show_scores=False)
+            payload.append({"rank": h.rank, **h.chunk.model_dump()})
     else:
         run = QualityRetriever().retrieve(
-            q, top_k=top_k, intent=forced, days_range=days_range
+            q,
+            top_k=top_k,
+            intent=forced,
+            days_range=days_range,
+            max_variants=variants,
+            diversity=diversity,
+            entity_gate=entity_gate,
         )
+        plan = run.plan
         console.print(
             f"[bold]intent[/bold]={run.intent.value}  "
-            f"[bold]variants[/bold]={run.variants}  "
-            f"[bold]latency_ms[/bold]={run.latency_ms}\n"
+            f"[bold]entities[/bold]={plan.entities if plan else []}  "
+            f"[bold]topics[/bold]={plan.topics if plan else []}"
         )
+        console.print(
+            f"[bold]variants[/bold]={run.variants}  "
+            f"[bold]candidates[/bold]={run.candidates}  "
+            f"[bold]latency_ms[/bold]="
+            f"{ {k: round(v) for k, v in run.latency_ms.items()} }"
+        )
+        if run.failed_variants:
+            console.print(f"[yellow]variants failed upstream:[/yellow] {run.failed_variants}")
+        console.print()
         payload = []
         for h in run.hits:
             _print_hit(h)
@@ -85,16 +111,24 @@ def retrieve_cmd(
         console.print(f"Wrote {out}")
 
 
-def _print_hit(h) -> None:
+def _print_hit(h, show_scores: bool = True) -> None:
     c = h.chunk
-    console.print(f"[bold]#{h.rank}[/bold] ({h.score:.4f}) {c.title}")
-    console.print(f"  {c.source} | {c.published_at} | {c.doc_id}")
-    if h.scores:
+    kind = (c.metadata or {}).get("doc_kind")
+    header = f"[bold]#{h.rank}[/bold]"
+    if show_scores:
+        header += f" ({h.score:.3f})"
+    console.print(f"{header} {c.title}")
+    tail = f" | {kind}" if kind else ""
+    console.print(f"  {c.source} | {c.published_at} | {c.doc_id}{tail}")
+    if show_scores and h.scores:
         console.print(
-            f"  [dim]rrf={h.scores.get('rrf', 0):.4f} "
-            f"lex={h.scores.get('lex', 0):.2f} "
+            f"  [dim]entity={h.scores.get('entity', 0):.2f} "
+            f"topic={h.scores.get('topic', 0):.2f} "
+            f"bm25={h.scores.get('bm25', 0):.2f} "
+            f"rrf={h.scores.get('rrf', 0):.2f} "
             f"auth={h.scores.get('authority', 1):.2f} "
-            f"fresh={h.scores.get('freshness', 1):.2f}[/dim]"
+            f"fresh={h.scores.get('freshness', 1):.2f} "
+            f"penalty={h.scores.get('penalty', 0):.2f}[/dim]"
         )
     console.print(f"  {c.text[:300].replace(chr(10), ' ')}…\n")
 
@@ -105,9 +139,16 @@ def eval_retrieve_cmd(
     report: Path = typer.Option(Path("evals/reports/factiva_retrieve_latest.json")),
     top_k: int = typer.Option(10),
     limit: Optional[int] = typer.Option(None, help="Only first N gold rows"),
+    compare: bool = typer.Option(
+        False,
+        "--compare/--no-compare",
+        help="Also run the single-call baseline and report the delta (2x API calls)",
+    ),
 ) -> None:
     """Retrieval-quality eval on Factiva gold set — no OpenAI."""
-    run_factiva_retrieval_eval(gold, report, top_k=top_k, limit=limit)
+    run_factiva_retrieval_eval(
+        gold, report, top_k=top_k, limit=limit, compare_baseline=compare
+    )
 
 
 @app.command("factiva-auth")

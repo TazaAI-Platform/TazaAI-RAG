@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from taza_rag.factiva.retrieve import FactivaRetrievalClient
-from taza_rag.factiva.strategy import default_days_range, detect_intent, expand_queries
+from taza_rag.factiva.retrieve import FactivaRetrievalClient, FactivaRetrieveError
+from taza_rag.factiva.strategy import (
+    default_days_range,
+    detect_intent,
+    expand_queries,
+    normalize_query,
+)
 from taza_rag.models import RetrievedChunk, SearchIntent
-from taza_rag.retrieve.quality import diversity_cap, fuse_and_rerank
+from taza_rag.retrieve.features import QueryPlan, build_query_plan
+from taza_rag.retrieve.quality import diversity_cap, mmr_diversify, rank_candidates
 
 
 @dataclass
@@ -15,8 +22,22 @@ class RetrievalRun:
     intent: SearchIntent
     variants: list[str]
     hits: list[RetrievedChunk]
+    plan: QueryPlan | None = None
+    candidates: int = 0
+    failed_variants: list[str] = field(default_factory=list)
     latency_ms: dict[str, float] = field(default_factory=dict)
-    config: str = "factiva_quality_v1"
+    config: str = "factiva_quality_v2"
+
+
+def _source_cap(intent: SearchIntent) -> int:
+    """Survey-style intents need breadth; entity asks tolerate depth from one outlet."""
+    if intent in {
+        SearchIntent.TOPICAL_EXPLORATION,
+        SearchIntent.GEOGRAPHIC_ASSESSMENT,
+        SearchIntent.COMPETITIVE_INTEL,
+    }:
+        return 2
+    return 3
 
 
 class QualityRetriever:
@@ -30,41 +51,74 @@ class QualityRetriever:
         query: str,
         *,
         top_k: int = 10,
-        per_variant_limit: int = 10,
+        per_variant_limit: int = 20,
         intent: SearchIntent | None = None,
         days_range: str | None = None,
         max_variants: int = 3,
         diversity: bool = True,
+        max_per_source: int | None = None,
+        entity_gate: bool = True,
     ) -> RetrievalRun:
         intent = intent or detect_intent(query)
-        variants = expand_queries(query, intent)[:max_variants]
+        variants = expand_queries(query, intent, max_variants=max_variants)
         window = days_range or default_days_range(intent)
+        # Plan from the normalized text, otherwise "Deutche Bank" never matches
+        # "Deutsche" in the documents and the entity signals silently go to zero.
+        plan = build_query_plan(normalize_query(query), intent)
+
+        # Warm the token once so parallel calls do not each run the OAuth exchange.
+        self.client.auth.get_access_token()
 
         t0 = time.perf_counter()
         rankings: list[list[RetrievedChunk]] = []
-        for variant in variants:
-            hits = self.client.retrieve(
-                variant,
-                limit=per_variant_limit,
-                days_range=window,
-            )
-            rankings.append(hits)
+        failed: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(len(variants), 4)) as pool:
+            futures = {
+                pool.submit(
+                    self.client.retrieve, v, limit=per_variant_limit, days_range=window
+                ): v
+                for v in variants
+            }
+            for future, variant in futures.items():
+                try:
+                    rankings.append(future.result())
+                except FactivaRetrieveError:
+                    # One flaky variant must not sink the whole pack.
+                    failed.append(variant)
         t1 = time.perf_counter()
 
-        fused = fuse_and_rerank(query, rankings, top_k=top_k * 2)
+        if not rankings:
+            raise FactivaRetrieveError(
+                f"All {len(variants)} query variants failed for {query!r}"
+            )
+
+        candidate_ids = {h.chunk.doc_id for r in rankings for h in r}
+        ranked = rank_candidates(
+            plan,
+            rankings,
+            top_k=top_k * 3,
+            entity_gate=entity_gate,
+        )
         if diversity:
-            fused = diversity_cap(fused, max_per_source=3)
-        fused = fused[:top_k]
+            cap = max_per_source if max_per_source is not None else _source_cap(intent)
+            ranked = diversity_cap(ranked, max_per_source=cap)
+            ranked = mmr_diversify(ranked, top_k=top_k)
+        ranked = ranked[:top_k]
+        for i, h in enumerate(ranked, start=1):
+            h.rank = i
         t2 = time.perf_counter()
 
         return RetrievalRun(
             query=query,
             intent=intent,
             variants=variants,
-            hits=fused,
+            hits=ranked,
+            plan=plan,
+            candidates=len(candidate_ids),
+            failed_variants=failed,
             latency_ms={
                 "factiva_multi": (t1 - t0) * 1000,
-                "fuse_rerank": (t2 - t1) * 1000,
+                "rank": (t2 - t1) * 1000,
                 "total": (t2 - t0) * 1000,
             },
         )

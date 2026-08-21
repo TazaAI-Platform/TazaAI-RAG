@@ -10,8 +10,8 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 |-------|------------|
 | Language | Python 3.11+ |
 | Factiva auth | Dow Jones OAuth2 service account (AuthN → AuthZ) |
-| Corpus / retrieve | Factiva Retrieval API (`POST /content/gen-ai/retrieve`) |
-| Ranking | Reciprocal Rank Fusion (RRF) + lexical / authority / freshness rerank |
+| Corpus / retrieve | Factiva Retrieval API (`POST /content/gen-ai/retrieve`), parallel variants |
+| Ranking | Relevance tiering + RRF + BM25 + entity/topic signals + authority/freshness, doc-type penalties, near-duplicate collapse |
 | Local index (ablation) | Dense embeddings + BM25 (`rank-bm25`, NumPy cosine) |
 | Config / CLI | `pydantic-settings`, Typer, Rich |
 | HTTP | `httpx` |
@@ -21,43 +21,50 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 
 ```text
                     ┌─────────────────────────────────────┐
-  query ──────────► │ intent detect + multi-query expand  │
+  query ──────────► │ normalize → intent → query plan     │
+                    │ (entities vs topics + synonyms)     │
                     └─────────────────┬───────────────────┘
                                       │ N query variants
                                       ▼
                     ┌─────────────────────────────────────┐
-                    │ Factiva Retrieval API (per variant) │
+                    │ Factiva Retrieval API (in parallel) │
                     └─────────────────┬───────────────────┘
-                                      │ ranked chunk lists
+                                      │ candidate pool
                                       ▼
                     ┌─────────────────────────────────────┐
-                    │ RRF fuse → dedupe by doc_id          │
-                    │ + lexical overlap                   │
-                    │ + source authority prior            │
-                    │ + freshness prior                   │
-                    │ + per-source diversity cap          │
+                    │ relevance tiering                   │
+                    │  t0 entity + topic in headline/lead │
+                    │  t1 entity + topic deeper in body   │
+                    │  t2 entity only                     │
+                    │  t3 off-entity   → gated out        │
+                    │ within tier: RRF + BM25 +           │
+                    │ entity/topic placement + authority  │
+                    │ + freshness − doc-type penalty      │
+                    │ then near-dup collapse + MMR        │
                     └─────────────────┬───────────────────┘
                                       ▼
                               evidence pack (top-k)
 
   optional ──► grounded answer + citations (LLM)
-  eval     ──► term_hit@k, salience@5, intent breakdown, A1 worksheet
+  eval     ──► aspect_coverage@5, entity_precision@5, noise_rate@5, salience@5
 ```
 
-Design principle aligned with Taza: keep the **marketplace / retrieval path measurable and auditable**; intelligence around query expansion and ranking can evolve independently.
+Design principle aligned with Taza: keep the **retrieval path measurable and auditable**; query planning and ranking can evolve independently.
 
 ## Retrieval quality pipeline
 
-Implemented in `taza_rag/factiva/pipeline.py` + `taza_rag/retrieve/quality.py`:
+Implemented in `taza_rag/factiva/pipeline.py`, `taza_rag/retrieve/features.py`, `taza_rag/retrieve/quality.py`:
 
-1. **Intent detection** (heuristic) — Factiva-style intents: entity, topical, executive profiling, geographic, risk/compliance, …
-2. **Query expansion** — intent-specific variants (e.g. entity → `latest news`, misspelling fixes like `Deutche` → `Deutsche`)
-3. **Multi-retrieve** — parallel Factiva calls with intent-aware `days_range`
-4. **RRF fusion** — merge variant rankings
-5. **Rerank** — lexical overlap + source authority + freshness
-6. **Diversity** — cap docs per source code so one wire does not dominate top-k
+1. **Query plan** — normalize aliases/misspellings (`Deutche` → `Deutsche`), split the ask into **entities** (capitalized/quoted spans) and **topics** (everything else), expand topics with journalistic synonyms (`restructuring` → job cuts, overhaul, divest, …)
+2. **Intent detection** — Factiva intents: entity, topical, executive profiling, geographic, risk/compliance, …
+3. **Multi-query retrieve** — literal ask + entity anchor + topic paraphrase, issued **in parallel** with intent-aware `days_range`
+4. **Relevance tiering** — the decisive step, ordered by *where* the answer lives. A story whose headline covers the ask beats one that mentions it in paragraph nine, which beats one that names the entity but answers a different question (a buyback story for a *restructuring* query). Matching is stem-insensitive, so "sells Indian assets" registers as divestment news
+5. **Within-tier scoring** — RRF across variants, BM25 over the candidate pool, entity placement (title > lead > body), topic coverage, source authority, freshness
+6. **Document-type penalties** — headline digests (`Top ... Headlines at 12 AM ET`, multi-headline pipes, newsletter round-ups) and vendor profiles (MarketLine/GlobalData, `- History`, SWOT) are demoted; aggregators lightly penalized
+7. **Entity gate** — for news-style intents, candidates that never name the entity are dropped when enough on-entity evidence exists
+8. **Near-duplicate collapse + diversity** — identical stories are merged, per-source caps apply (2 for survey intents, 3 for entity intents), and **MMR** within each tier trades a little score for narrative breadth so one angle or region cannot fill the pack
 
-Ablation: `taza-rag retrieve --raw` skips steps 1–2/4–6 (single Factiva call).
+Ablation: `taza-rag retrieve --raw` is the baseline (single Factiva call, API order, no scoring).
 
 ## Evaluation
 
@@ -65,16 +72,44 @@ Ablation: `taza-rag retrieve --raw` skips steps 1–2/4–6 (single Factiva call
 
 | Signal | Meaning |
 |--------|---------|
-| `term_hit@k` | Required terms present in top-k titles/text |
-| `salience@5` | Query-token coverage in top-5 pack |
+| `term_hit@k` | Required terms present anywhere in top-k (a floor check — saturates at 1.0) |
+| `term_hit_lead@3` | Stricter: required terms must reach the top-3 headlines/leads |
+| `aspect_coverage@5` | Share of the gold set's substantive angles surfaced in the top-5 — the **Completeness** proxy and the most discriminative signal |
+| `salience@5` | Query-token coverage in the top-5 pack |
+| `entity_precision@5` | Share of top-5 that actually name the query entity in title/lead |
+| `noise_rate@5` | Share of top-5 that are digests or vendor profiles (lower is better) |
 | By-intent breakdown | Quality stratified by Factiva search intent |
-| Markdown worksheet | Human Relevance / Completeness (1–3) on the pack |
+| Markdown worksheet | Human Relevance / Completeness (1–3) on each pack |
+
+`term_hit@k` is kept deliberately as a regression floor even though it saturates: the
+Retrieval API almost always returns the subject, so it cannot separate a good pack from
+a mediocre one. `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` are what
+move when ranking changes.
+
+### Measured results
+
+16 gold queries across all five Factiva intents, live API, `top_k=8`. Baseline is a
+single Factiva call in API order; quality is the full stack.
+
+| Metric | Baseline | Quality | Delta |
+|--------|----------|---------|-------|
+| `term_hit@k` | 1.000 | 1.000 | +0.000 |
+| `term_hit_lead@3` | 1.000 | 1.000 | +0.000 |
+| `aspect_coverage@5` | 0.552 | 0.688 | **+0.135** |
+| `salience@5` | 0.899 | 0.954 | +0.055 |
+| `entity_precision@5` | 0.700 | 0.856 | **+0.156** |
+| `noise_rate@5` (lower better) | 0.062 | 0.013 | **−0.050** |
+
+Reproduce with `taza-rag eval-retrieve --top-k 8 --compare`. Numbers shift slightly run
+to run because the underlying Factiva corpus is live.
 
 ```bash
 taza-rag eval-retrieve --gold evals/gold/factiva_live_v1.jsonl
+taza-rag eval-retrieve --compare   # baseline vs quality stack, with deltas
 ```
 
-Writes `evals/reports/factiva_retrieve_latest.json` + `.md` worksheet.
+Writes `evals/reports/factiva_retrieve_latest.json` + `.md` worksheet. `--compare` also runs
+the single-call baseline per query and emits an ablation table.
 
 ### Local sample index (offline ablations)
 
@@ -120,7 +155,8 @@ taza-rag retrieve "private credit market trends" --raw   # baseline ablation
 
 # Eval
 taza-rag eval-retrieve --gold evals/gold/factiva_live_v1.jsonl
-taza-rag eval-retrieve --limit 5   # smoke
+taza-rag eval-retrieve --limit 5              # smoke
+taza-rag eval-retrieve --limit 5 --compare    # vs single-call baseline
 
 # Optional generation (needs OPENAI_API_KEY)
 taza-rag answer "EU AI Act compliance"
@@ -130,18 +166,7 @@ taza-rag ingest --corpus data/sample_corpus/articles.jsonl
 taza-rag eval-local --gold evals/gold/v1.jsonl --no-judge
 ```
 
-<<<<<<< HEAD
-## What “good” looks like
-
-- Higher **term_hit@k** / **salience@5** on `factiva_live_v1` by intent
-- Human Relevance/Completeness ≥ 2 on worksheet markdown
-- Ablation: quality stack beats `--raw` on entity misspellings & topical queries
-- Clear failure tags when packs are weak
-
-## Layout
-=======
-Equivalent without entrypoint:
->>>>>>> b92ee8e (Rewrite README for trial: retrieval stack and eval focus)
+Equivalent without installing the entrypoint:
 
 ```bash
 python -m taza_rag.cli retrieve "SoftBank Group"
@@ -149,12 +174,40 @@ python -m taza_rag.cli retrieve "SoftBank Group"
 ./scripts/taza-rag retrieve "SoftBank Group"
 ```
 
+### Ablations
+
+Each ranking stage can be switched off to attribute the gain:
+
+```bash
+taza-rag retrieve "Deutsche Bank restructuring" --no-entity-gate
+taza-rag retrieve "private credit market trends" --no-diversity
+taza-rag retrieve "SoftBank Group" --variants 1     # single query, still reranked
+taza-rag retrieve "SoftBank Group" --raw            # no quality stack at all
+```
+
+## Tests
+
+```bash
+python scripts/run_tests.py     # stdlib runner, no pytest needed
+pytest tests/                   # if dev extras are installed
+```
+
+24 offline tests cover entity extraction, document-type detection, tiering, stemming,
+MMR, and near-duplicate collapse. None require network access or API credentials.
+
+## What “good” looks like
+
+- `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` beat the `--raw` baseline
+- Human Relevance/Completeness ≥ 2 on the generated worksheet
+- Misspelled entities (`Deutche`) rank the same as correctly spelled ones
+- Digests and vendor profiles stay out of the top-5 for news intents
+
 ## Repository layout
 
 ```text
 taza_rag/
   factiva/          # OAuth, Retrieval API client, intent strategy, quality pipeline
-  retrieve/         # RRF / rerank / diversity (Factiva + local)
+  retrieve/         # query features, tiering / rerank / diversity (Factiva + local)
   index/            # local dense + BM25 store
   ingest/           # chunking + contextual prefixes (local path)
   generate/         # optional grounded answer
