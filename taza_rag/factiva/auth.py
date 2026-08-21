@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -9,6 +10,22 @@ import httpx
 from taza_rag.config import settings
 
 AccountKind = Literal["rag", "feed"]
+MAX_TRANSPORT_RETRIES = 2
+
+
+def _post_with_retry(
+    client: httpx.Client, url: str, data: dict[str, str], headers: dict[str, str]
+) -> httpx.Response:
+    """The token endpoint occasionally resets the connection; retry before failing."""
+    last: Exception | None = None
+    for attempt in range(1, MAX_TRANSPORT_RETRIES + 2):
+        try:
+            return client.post(url, data=data, headers=headers)
+        except httpx.TransportError as e:
+            last = e
+            if attempt <= MAX_TRANSPORT_RETRIES:
+                time.sleep(min(4.0, 0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.3))
+    raise FactivaAuthError(f"Token endpoint unreachable: {last}") from last
 
 
 class FactivaAuthError(RuntimeError):
@@ -51,9 +68,10 @@ class FactivaAuth:
             return self._bundle.access_token
         client_id, username, password = self._credentials()
         with httpx.Client(timeout=60.0) as client:
-            authn = client.post(
+            authn = _post_with_retry(
+                client,
                 settings.factiva_token_url,
-                data={
+                {
                     "username": username,
                     "client_id": client_id,
                     "password": password,
@@ -61,7 +79,7 @@ class FactivaAuth:
                     "grant_type": "password",
                     "scope": "openid service_account_id",
                 },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                {"Content-Type": "application/x-www-form-urlencoded"},
             )
             if authn.status_code >= 400:
                 raise FactivaAuthError(
@@ -83,10 +101,11 @@ class FactivaAuth:
             if access_token_n:
                 authz_data["access_token"] = access_token_n
 
-            authz = client.post(
+            authz = _post_with_retry(
+                client,
                 settings.factiva_token_url,
-                data=authz_data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                authz_data,
+                {"Content-Type": "application/x-www-form-urlencoded"},
             )
             if authz.status_code >= 400:
                 raise FactivaAuthError(

@@ -4,6 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from taza_rag.factiva.contextual import PASSAGE_TOKENS, semantic_scores, to_passages
 from taza_rag.factiva.retrieve import FactivaRetrievalClient, FactivaRetrieveError
 from taza_rag.factiva.strategy import (
     default_days_range,
@@ -24,6 +25,7 @@ class RetrievalRun:
     hits: list[RetrievedChunk]
     plan: QueryPlan | None = None
     candidates: int = 0
+    passages: int = 0
     failed_variants: list[str] = field(default_factory=list)
     latency_ms: dict[str, float] = field(default_factory=dict)
     config: str = "factiva_quality_v2"
@@ -58,6 +60,10 @@ class QualityRetriever:
         diversity: bool = True,
         max_per_source: int | None = None,
         entity_gate: bool = True,
+        contextual: bool = True,
+        llm_context: bool = False,
+        semantic: bool = False,
+        passage_tokens: int = PASSAGE_TOKENS,
     ) -> RetrievalRun:
         intent = intent or detect_intent(query)
         variants = expand_queries(query, intent, max_variants=max_variants)
@@ -93,6 +99,30 @@ class QualityRetriever:
             )
 
         candidate_ids = {h.chunk.doc_id for r in rankings for h in r}
+
+        # Contextual retrieval: rank contextualized passages rather than whole articles.
+        if contextual:
+            rankings = [
+                to_passages(r, use_llm=llm_context, target_tokens=passage_tokens)
+                for r in rankings
+            ]
+        passage_ids = {h.chunk.chunk_id for r in rankings for h in r}
+        t_ctx = time.perf_counter()
+
+        semantic_used = False
+        if semantic:
+            unique: dict[str, RetrievedChunk] = {}
+            for r in rankings:
+                for h in r:
+                    unique.setdefault(h.chunk.chunk_id, h)
+            sims = semantic_scores(query, list(unique.values()))
+            if sims:
+                by_key = dict(zip(unique.keys(), sims))
+                for r in rankings:
+                    for h in r:
+                        h.scores["semantic_pre"] = by_key.get(h.chunk.chunk_id, 0.0)
+                semantic_used = True
+
         ranked = rank_candidates(
             plan,
             rankings,
@@ -108,6 +138,12 @@ class QualityRetriever:
             h.rank = i
         t2 = time.perf_counter()
 
+        config = "factiva_quality_v2"
+        if contextual:
+            config += "+ctx_llm" if llm_context else "+ctx"
+        if semantic_used:
+            config += "+semantic"
+
         return RetrievalRun(
             query=query,
             intent=intent,
@@ -115,10 +151,13 @@ class QualityRetriever:
             hits=ranked,
             plan=plan,
             candidates=len(candidate_ids),
+            passages=len(passage_ids),
             failed_variants=failed,
             latency_ms={
                 "factiva_multi": (t1 - t0) * 1000,
-                "rank": (t2 - t1) * 1000,
+                "contextualize": (t_ctx - t1) * 1000,
+                "rank": (t2 - t_ctx) * 1000,
                 "total": (t2 - t0) * 1000,
             },
+            config=config,
         )

@@ -14,7 +14,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-MODULES = ["tests.test_retrieval_quality", "tests.test_smoke"]
+MODULES = [
+    "tests.test_retrieval_quality",
+    "tests.test_contextual",
+    "tests.test_smoke",
+]
 
 
 def main() -> int:

@@ -60,6 +60,39 @@ def aspect_coverage(hits: list[RetrievedChunk], aspects: list[str], k: int = 5) 
     return sum(1 for a in aspects if a.lower() in blob) / len(aspects)
 
 
+def pack_tokens(hits: list[RetrievedChunk], k: int = 5) -> float:
+    """Approximate size of the evidence pack — what the customer pays to receive."""
+    return float(sum(len((h.chunk.text or "").split()) for h in hits[:k]))
+
+
+def coverage_at_budget(
+    hits: list[RetrievedChunk],
+    aspects: list[str],
+    budget_tokens: int = 1200,
+) -> float:
+    """Aspect coverage from the first `budget_tokens` of evidence, in rank order.
+
+    `aspect_coverage@5` rewards returning more text, which is the over-retrieval
+    behaviour the marketplace model penalises: a whole article covers more terms than
+    a passage simply by being longer. Fixing the budget compares packs at equal cost.
+    """
+    if not aspects:
+        return 1.0
+    used = 0
+    parts: list[str] = []
+    for h in hits:
+        text = h.chunk.text or ""
+        tokens = len(text.split())
+        if used and used + tokens > budget_tokens:
+            break
+        parts.append(f"{h.chunk.title}\n{text}")
+        used += tokens
+        if used >= budget_tokens:
+            break
+    blob = "\n".join(parts).lower()
+    return sum(1 for a in aspects if a.lower() in blob) / len(aspects)
+
+
 def salience_proxy(query: str, hits: list[RetrievedChunk], k: int = 5) -> float:
     """Cheap proxy: fraction of query tokens appearing in top-k titles/snippets."""
     q_terms = [
@@ -122,6 +155,8 @@ def _metrics(
         "term_hit@k": term_hit_rate(hits, terms, k=top_k),
         "term_hit_lead@3": term_hit_lead(hits, terms, k=3),
         "aspect_coverage@5": aspect_coverage(hits, aspects, k=min(5, top_k)),
+        "aspect_coverage@1200tok": coverage_at_budget(hits, aspects, budget_tokens=1200),
+        "evidence_tokens@5": pack_tokens(hits, k=min(5, top_k)),
         "salience@5": salience_proxy(query, hits, k=min(5, top_k)),
         "entity_precision@5": entity_precision(query, intent, hits, k=min(5, top_k)),
         "noise_rate@5": noise_rate(hits, k=min(5, top_k)),
@@ -135,7 +170,10 @@ def run_factiva_retrieval_eval(
     top_k: int = 10,
     limit: int | None = None,
     compare_baseline: bool = False,
-    config_name: str = "factiva_quality_v2",
+    contextual: bool = True,
+    semantic: bool = False,
+    passage_tokens: int = 180,
+    config_name: str | None = None,
 ) -> dict[str, Any]:
     """Retrieval-quality eval against live Factiva (no OpenAI required)."""
     gold = load_gold(gold_path)
@@ -151,7 +189,14 @@ def run_factiva_retrieval_eval(
     by_intent: dict[str, list[float]] = defaultdict(list)
 
     for ex in gold:
-        run = retriever.retrieve(ex.query, top_k=top_k, intent=ex.intent)
+        run = retriever.retrieve(
+            ex.query,
+            top_k=top_k,
+            intent=ex.intent,
+            contextual=contextual,
+            semantic=semantic,
+            passage_tokens=passage_tokens,
+        )
         m = _metrics(
             ex.query,
             ex.intent,
@@ -166,12 +211,14 @@ def run_factiva_retrieval_eval(
 
         row: dict[str, Any] = {
             "id": ex.id,
+            "config": run.config,
             "intent": ex.intent.value,
             "query": ex.query,
             "entities": run.plan.entities if run.plan else [],
             "topics": run.plan.topics if run.plan else [],
             "variants": run.variants,
             "candidates": run.candidates,
+            "passages": run.passages,
             **m,
             "authority_mix@5": authority_mix(run.hits, k=5),
             "latency_ms": run.latency_ms,
@@ -220,12 +267,14 @@ def run_factiva_retrieval_eval(
         return sum(values) / len(values) if values else 0.0
 
     summary: dict[str, Any] = {
-        "config": config_name,
+        "config": config_name or (rows[0]["config"] if rows else "factiva_quality_v2"),
         "n": len(gold),
         "intent_mix": intent_counts(gold),
         "mean_term_hit@k": mean(agg["term_hit@k"]),
         "mean_term_hit_lead@3": mean(agg["term_hit_lead@3"]),
         "mean_aspect_coverage@5": mean(agg["aspect_coverage@5"]),
+        "mean_aspect_coverage@1200tok": mean(agg["aspect_coverage@1200tok"]),
+        "mean_evidence_tokens@5": mean(agg["evidence_tokens@5"]),
         "mean_salience@5": mean(agg["salience@5"]),
         "mean_entity_precision@5": mean(agg["entity_precision@5"]),
         "mean_noise_rate@5": mean(agg["noise_rate@5"]),
@@ -237,6 +286,8 @@ def run_factiva_retrieval_eval(
             "mean_term_hit@k": mean(base_agg["term_hit@k"]),
             "mean_term_hit_lead@3": mean(base_agg["term_hit_lead@3"]),
             "mean_aspect_coverage@5": mean(base_agg["aspect_coverage@5"]),
+            "mean_aspect_coverage@1200tok": mean(base_agg["aspect_coverage@1200tok"]),
+            "mean_evidence_tokens@5": mean(base_agg["evidence_tokens@5"]),
             "mean_salience@5": mean(base_agg["salience@5"]),
             "mean_entity_precision@5": mean(base_agg["entity_precision@5"]),
             "mean_noise_rate@5": mean(base_agg["noise_rate@5"]),
@@ -262,6 +313,8 @@ def _to_markdown(summary: dict[str, Any]) -> str:
         f"- mean term_hit@k={summary['mean_term_hit@k']:.3f}",
         f"- mean term_hit_lead@3={summary['mean_term_hit_lead@3']:.3f}",
         f"- mean aspect_coverage@5={summary['mean_aspect_coverage@5']:.3f}",
+        f"- mean aspect_coverage@1200tok={summary['mean_aspect_coverage@1200tok']:.3f}",
+        f"- mean evidence_tokens@5={summary['mean_evidence_tokens@5']:.0f}",
         f"- mean salience@5={summary['mean_salience@5']:.3f}",
         f"- mean entity_precision@5={summary['mean_entity_precision@5']:.3f}",
         f"- mean noise_rate@5={summary['mean_noise_rate@5']:.3f} (lower is better)",
@@ -289,6 +342,16 @@ def _to_markdown(summary: dict[str, Any]) -> str:
                 b["mean_aspect_coverage@5"],
                 summary["mean_aspect_coverage@5"],
             ),
+            _md_row(
+                "aspect_coverage@1200tok",
+                b["mean_aspect_coverage@1200tok"],
+                summary["mean_aspect_coverage@1200tok"],
+            ),
+            _md_row(
+                "evidence_tokens@5",
+                b["mean_evidence_tokens@5"],
+                summary["mean_evidence_tokens@5"],
+            ),
             _md_row("salience@5", b["mean_salience@5"], summary["mean_salience@5"]),
             _md_row(
                 "entity_precision@5",
@@ -308,6 +371,8 @@ def _to_markdown(summary: dict[str, Any]) -> str:
             f"**Auto:** term_hit={row['term_hit@k']:.2f} "
             f"term_hit_lead@3={row['term_hit_lead@3']:.2f} "
             f"aspect_cov={row['aspect_coverage@5']:.2f} "
+            f"aspect_cov@1200tok={row['aspect_coverage@1200tok']:.2f} "
+            f"tokens={row['evidence_tokens@5']:.0f} "
             f"salience={row['salience@5']:.2f} "
             f"entity_prec={row['entity_precision@5']:.2f} "
             f"noise={row['noise_rate@5']:.2f}"
@@ -352,6 +417,8 @@ def _print(summary: dict[str, Any]) -> None:
     add("term_hit@k", "term_hit@k")
     add("term_hit_lead@3", "term_hit_lead@3")
     add("aspect_coverage@5", "aspect_coverage@5")
+    add("aspect_coverage@1200tok", "aspect_coverage@1200tok")
+    add("evidence_tokens@5 (lower better)", "evidence_tokens@5")
     add("salience@5", "salience@5")
     add("entity_precision@5", "entity_precision@5")
     add("noise_rate@5 (lower better)", "noise_rate@5")

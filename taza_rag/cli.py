@@ -51,6 +51,18 @@ def retrieve_cmd(
     entity_gate: bool = typer.Option(
         True, "--entity-gate/--no-entity-gate", help="Ablation: drop off-entity candidates"
     ),
+    contextual: bool = typer.Option(
+        True,
+        "--contextual/--no-contextual",
+        help="Contextual retrieval: rank contextualized passages, not whole articles",
+    ),
+    llm_context: bool = typer.Option(
+        False, "--llm-context", help="Write passage context with an LLM (needs OPENAI_API_KEY)"
+    ),
+    semantic: bool = typer.Option(
+        False, "--semantic", help="Add embedding similarity (needs OPENAI_API_KEY)"
+    ),
+    passage_tokens: int = typer.Option(180, help="Target passage size for contextual retrieval"),
 ) -> None:
     """Primary command: high-quality Factiva retrieval (no OpenAI)."""
     forced: SearchIntent | None = SearchIntent(intent) if intent else None
@@ -77,6 +89,10 @@ def retrieve_cmd(
             max_variants=variants,
             diversity=diversity,
             entity_gate=entity_gate,
+            contextual=contextual,
+            llm_context=llm_context,
+            semantic=semantic,
+            passage_tokens=passage_tokens,
         )
         plan = run.plan
         console.print(
@@ -85,8 +101,12 @@ def retrieve_cmd(
             f"[bold]topics[/bold]={plan.topics if plan else []}"
         )
         console.print(
-            f"[bold]variants[/bold]={run.variants}  "
-            f"[bold]candidates[/bold]={run.candidates}  "
+            f"[bold]config[/bold]={run.config}  "
+            f"[bold]variants[/bold]={run.variants}"
+        )
+        console.print(
+            f"[bold]articles[/bold]={run.candidates}  "
+            f"[bold]passages[/bold]={run.passages}  "
             f"[bold]latency_ms[/bold]="
             f"{ {k: round(v) for k, v in run.latency_ms.items()} }"
         )
@@ -119,6 +139,9 @@ def _print_hit(h, show_scores: bool = True) -> None:
         header += f" ({h.score:.3f})"
     console.print(f"{header} {c.title}")
     tail = f" | {kind}" if kind else ""
+    passages = (c.metadata or {}).get("passage_count")
+    if passages:
+        tail += f" | passage {c.chunk_index + 1}/{passages}"
     console.print(f"  {c.source} | {c.published_at} | {c.doc_id}{tail}")
     if show_scores and h.scores:
         console.print(
@@ -144,10 +167,24 @@ def eval_retrieve_cmd(
         "--compare/--no-compare",
         help="Also run the single-call baseline and report the delta (2x API calls)",
     ),
+    contextual: bool = typer.Option(
+        True, "--contextual/--no-contextual", help="Ablation: contextual passage retrieval"
+    ),
+    semantic: bool = typer.Option(
+        False, "--semantic", help="Add embedding similarity (needs OPENAI_API_KEY)"
+    ),
+    passage_tokens: int = typer.Option(180, help="Target passage size for contextual retrieval"),
 ) -> None:
     """Retrieval-quality eval on Factiva gold set — no OpenAI."""
     run_factiva_retrieval_eval(
-        gold, report, top_k=top_k, limit=limit, compare_baseline=compare
+        gold,
+        report,
+        top_k=top_k,
+        limit=limit,
+        compare_baseline=compare,
+        contextual=contextual,
+        semantic=semantic,
+        passage_tokens=passage_tokens,
     )
 
 

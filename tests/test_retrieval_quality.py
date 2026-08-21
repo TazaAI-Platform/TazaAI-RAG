@@ -14,6 +14,7 @@ from taza_rag.retrieve.quality import (
     fuse_and_rerank,
     mmr_diversify,
     rank_candidates,
+    relevance_tier,
 )
 
 
@@ -53,6 +54,51 @@ def test_extract_entities_prefers_longest_span():
     ents = extract_entities("Deutsche Bank restructuring")
     assert "Deutsche Bank" in ents
     assert "Deutsche" not in ents
+
+
+def test_adjacent_entities_are_split_apart():
+    """"Larry Fink BlackRock" is a phrase no document contains; as one span it drove
+    every entity signal to zero."""
+    assert extract_entities("Larry Fink BlackRock private markets") == [
+        "Larry Fink",
+        "BlackRock",
+    ]
+    assert extract_entities("Elon Musk Tesla robotaxi") == ["Elon Musk", "Tesla"]
+
+
+def test_multi_word_organisation_names_survive_the_split():
+    assert extract_entities("Deutsche Bank restructuring") == ["Deutsche Bank"]
+    assert extract_entities("European Central Bank policy") == ["European Central Bank"]
+    assert extract_entities("Goldman Sachs asset management") == ["Goldman Sachs"]
+
+
+def test_acronyms_stay_attached_to_their_name():
+    """An all-caps token is not a brand of its own — "Taza AI" is one entity."""
+    assert extract_entities("Taza AI funding") == ["Taza AI"]
+
+
+def test_missing_a_second_entity_costs_the_top_tier():
+    """"Andy Jassy AWS growth strategy" is not answered by a Jassy story about retail."""
+    plan = build_query_plan("Andy Jassy AWS growth strategy", SearchIntent.EXECUTIVE_PROFILING)
+    both = _hit("d1", "Andy Jassy sets out AWS growth strategy", "AWS revenue accelerated.")
+    only_person = _hit("d2", "Andy Jassy's India visit and Amazon's growth strategy", "Retail.")
+    assert relevance_tier(plan, entity_signal(plan, both), topic_signal(plan, both)) < relevance_tier(
+        plan, entity_signal(plan, only_person), topic_signal(plan, only_person)
+    )
+
+
+def test_single_entity_queries_keep_the_top_tier():
+    plan = build_query_plan("Deutsche Bank restructuring", SearchIntent.ENTITY_INVESTIGATION)
+    hit = _hit("d1", "Deutsche Bank plans restructuring", "Body.")
+    assert relevance_tier(plan, entity_signal(plan, hit), topic_signal(plan, hit)) == 0
+
+
+def test_split_entities_score_independently():
+    plan = build_query_plan("Larry Fink BlackRock private markets", SearchIntent.EXECUTIVE_PROFILING)
+    hit = _hit("d1", "Larry Fink defends BlackRock's private markets push", "Body text.")
+    sig = entity_signal(plan, hit)
+    assert sig["entity_any"] == 1.0
+    assert sig["entity_extra"] > 0.0
 
 
 def test_generic_role_words_are_not_entities():

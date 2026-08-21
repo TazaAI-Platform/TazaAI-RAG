@@ -75,7 +75,9 @@ def item_to_chunk(item: dict[str, Any], rank: int) -> RetrievedChunk:
     tier = "premium" if source_code in {"djdn", "j", "wsjo", "wsj"} else "standard"
 
     chunk = Chunk(
-        chunk_id=f"{doc_id}::r{rank:04d}",
+        # Positional, not rank-based: the same article retrieved by two query variants
+        # must carry the same id or rank fusion cannot recognise it.
+        chunk_id=f"{doc_id}::p000",
         doc_id=str(doc_id),
         text=text.strip(),
         title=title.strip(),
@@ -83,7 +85,7 @@ def item_to_chunk(item: dict[str, Any], rank: int) -> RetrievedChunk:
         source_tier=tier,
         published_at=str(published) if published else None,
         url=url,
-        chunk_index=rank,
+        chunk_index=0,
         token_estimate=max(1, len(text.split())),
         metadata={
             "factiva_id": item.get("id"),
@@ -161,19 +163,37 @@ class FactivaRetrievalClient:
             "Content-Type": "application/json",
         }
 
+        def _backoff(attempt: int) -> None:
+            time.sleep(min(4.0, 0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.3))
+
         with httpx.Client(timeout=90.0) as client:
-            resp = client.post(url, headers=headers, json=payload)
+
+            def _post() -> httpx.Response:
+                """Retry dropped connections; a reset mid-eval must not sink the run."""
+                last: Exception | None = None
+                for attempt in range(1, self.max_retries + 2):
+                    try:
+                        return client.post(url, headers=headers, json=payload)
+                    except httpx.TransportError as e:
+                        last = e
+                        if attempt <= self.max_retries:
+                            _backoff(attempt)
+                raise FactivaRetrieveError(
+                    f"Retrieve transport failure for query {query!r}: {last}"
+                ) from last
+
+            resp = _post()
             if resp.status_code == 401:
                 token = self.auth.get_access_token(force=True)
                 headers["Authorization"] = f"Bearer {token}"
-                resp = client.post(url, headers=headers, json=payload)
+                resp = _post()
 
             # The semantic service returns sporadic 5xx/429; retry with jittered backoff.
             for attempt in range(1, self.max_retries + 1):
                 if resp.status_code not in RETRY_STATUS:
                     break
-                time.sleep(min(4.0, 0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.3))
-                resp = client.post(url, headers=headers, json=payload)
+                _backoff(attempt)
+                resp = _post()
 
             if resp.status_code >= 400:
                 raise FactivaRetrieveError(

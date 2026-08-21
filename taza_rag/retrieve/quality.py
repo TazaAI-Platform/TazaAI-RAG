@@ -9,6 +9,7 @@ from taza_rag.models import RetrievedChunk, SearchIntent
 from taza_rag.retrieve.features import (
     NEWS_INTENTS,
     QueryPlan,
+    jaccard,
     build_query_plan,
     content_terms,
     doc_kind,
@@ -40,21 +41,30 @@ W_ENTITY = 1.0
 W_TOPIC = 1.2
 W_AUTH = 0.8
 W_FRESH = 0.6
+W_SEMANTIC = 0.9
+# Evidence from the top of an article outranks the same wording buried further down.
+W_POSITION = 0.06
+MAX_POSITION_PENALTY = 4
 
 
 def tokenize(text: str) -> set[str]:
     return set(words(text))
 
 
+def candidate_key(hit: RetrievedChunk) -> str:
+    """Fusion key. Passage ids are positional, so they are stable across variants."""
+    return hit.chunk.chunk_id or hit.chunk.doc_id
+
+
 def reciprocal_rank_fusion(
     rankings: list[list[RetrievedChunk]],
     k: int = 60,
 ) -> dict[str, float]:
-    """RRF over doc ids across query variants."""
+    """RRF over candidates across query variants."""
     scores: dict[str, float] = defaultdict(float)
     for ranking in rankings:
         for rank, hit in enumerate(ranking, start=1):
-            scores[hit.chunk.doc_id] += 1.0 / (k + rank)
+            scores[candidate_key(hit)] += 1.0 / (k + rank)
     return scores
 
 
@@ -124,7 +134,7 @@ TIER_ENTITY_ONLY = 2  # entity present, topic absent
 TIER_OFF_ENTITY = 3  # entity absent
 
 
-def relevance_tier(plan: QueryPlan, entity_any: float, topic: dict[str, float]) -> int:
+def relevance_tier(plan: QueryPlan, entity: dict[str, float], topic: dict[str, float]) -> int:
     """Rank by where the answer to the ask actually lives.
 
     Tiering keeps ordering faithful to the query: for "Deutsche Bank restructuring" a
@@ -132,23 +142,33 @@ def relevance_tier(plan: QueryPlan, entity_any: float, topic: dict[str, float]) 
     story that happens to mention an overhaul in paragraph nine is weaker evidence
     than a headline about the overhaul itself.
     """
-    if plan.entity_tokens and entity_any <= 0.0:
+    if plan.entity_tokens and entity["entity_any"] <= 0.0:
         return TIER_OFF_ENTITY
+
+    # A query naming two entities is only fully answered by evidence naming both, so
+    # missing one costs the top tier even when the topic is in the headline.
+    multi_entity = len(plan.entity_tokens) > 1
+    floor = TIER_BODY if multi_entity and entity["entity_all"] <= 0.0 else TIER_HEADLINE
+
     if not plan.topics:
-        return TIER_HEADLINE
+        return floor
     if max(topic["topic_title"], topic["topic_lead"]) > 0.0:
-        return TIER_HEADLINE
+        return floor
     if topic["topic_strong"] > 0.0:
-        return TIER_BODY
+        return max(TIER_BODY, floor)
     return TIER_ENTITY_ONLY
 
 
 def _bm25_scores(plan: QueryPlan, candidates: list[RetrievedChunk]) -> list[float]:
-    """BM25 over the candidate pool; title weighted by repetition."""
+    """BM25 over the candidate pool; title weighted by repetition.
+
+    Uses `index_text`, so when contextual retrieval is on the situating prefix
+    contributes its document anchors (source, date, subject) to lexical matching.
+    """
     corpus = []
     for h in candidates:
         title_tokens = content_terms(h.chunk.title)
-        body_tokens = content_terms(h.chunk.text)
+        body_tokens = content_terms(h.chunk.index_text)
         corpus.append(title_tokens * 3 + body_tokens)
     if not corpus:
         return []
@@ -170,14 +190,21 @@ def rank_candidates(
     top_k: int = 10,
     entity_gate: bool = True,
     drop_near_duplicates: bool = True,
+    one_per_doc: bool = True,
 ) -> list[RetrievedChunk]:
-    """Score, gate, and order Factiva candidates for retrieval quality."""
+    """Score, gate, and order Factiva candidates for retrieval quality.
+
+    Candidates may be whole articles or contextualized passages; `one_per_doc` keeps
+    only each document's best passage so the pack does not spend its budget quoting
+    the same story twice.
+    """
     pool: dict[str, RetrievedChunk] = {}
     for ranking in rankings:
         for h in ranking:
-            prev = pool.get(h.chunk.doc_id)
+            key = candidate_key(h)
+            prev = pool.get(key)
             if prev is None or (h.scores.get("api_rank", 99) < prev.scores.get("api_rank", 99)):
-                pool[h.chunk.doc_id] = h
+                pool[key] = h
 
     candidates = list(pool.values())
     if not candidates:
@@ -195,8 +222,12 @@ def rank_candidates(
         auth = authority_score(base)
         fresh = freshness_score(base.chunk.published_at)
 
-        rrf_n = (rrf.get(base.chunk.doc_id, 0.0) / rrf_top) if rrf_top else 0.0
+        key = candidate_key(base)
+        rrf_n = (rrf.get(key, 0.0) / rrf_top) if rrf_top else 0.0
         bm25_n = bm25[i] if i < len(bm25) else 0.0
+        # Attached upstream when embeddings are enabled; absent by default.
+        sem = base.scores.get("semantic_pre", 0.0)
+        position_penalty = W_POSITION * min(base.chunk.chunk_index, MAX_POSITION_PENALTY)
 
         # Entity presence matters most in the title, then the lead paragraph.
         entity_component = (
@@ -208,16 +239,18 @@ def rank_candidates(
         topic_component = 0.6 * top["topic_title"] + 0.4 * top["topic_body"]
 
         penalty = kind_penalty(kind, plan.intent)
-        tier = relevance_tier(plan, ent["entity_any"], top)
+        tier = relevance_tier(plan, ent, top)
 
         score = (
             W_RRF * rrf_n
             + W_BM25 * bm25_n
+            + W_SEMANTIC * sem
             + W_ENTITY * entity_component
             + W_TOPIC * topic_component
             + W_AUTH * (auth - 1.0)
             + W_FRESH * (fresh - 1.0)
             - penalty
+            - position_penalty
         )
 
         scored.append(
@@ -230,11 +263,13 @@ def rank_candidates(
                     "tier": float(tier),
                     "rrf": rrf_n,
                     "bm25": bm25_n,
+                    "semantic": sem,
                     "entity": entity_component,
                     "topic": topic_component,
                     "authority": auth,
                     "freshness": fresh,
                     "penalty": penalty,
+                    "position": position_penalty,
                     "api_rank": base.scores.get("api_rank", 0.0),
                 },
             )
@@ -244,6 +279,17 @@ def rank_candidates(
 
     # Tier first (does it answer the ask), then composite score inside the tier.
     scored.sort(key=lambda h: (h.scores["tier"], -h.score, h.chunk.published_at or ""))
+
+    # Keep each document's strongest passage; the rest is redundant evidence.
+    if one_per_doc:
+        best: dict[str, RetrievedChunk] = {}
+        for h in scored:
+            if h.chunk.doc_id not in best:
+                best[h.chunk.doc_id] = h
+        scored = sorted(
+            best.values(),
+            key=lambda h: (h.scores["tier"], -h.score, h.chunk.published_at or ""),
+        )
 
     # Entity gate: for entity-style asks, evidence that never names the entity is noise.
     if entity_gate and plan.entity_tokens and plan.intent in NEWS_INTENTS:
@@ -286,13 +332,6 @@ def _content_signature(hit: RetrievedChunk) -> set[str]:
     return set(content_terms(f"{hit.chunk.title} {hit.chunk.text[:220]}"))
 
 
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    union = len(a | b)
-    return len(a & b) / union if union else 0.0
-
-
 def mmr_diversify(
     hits: list[RetrievedChunk],
     *,
@@ -330,7 +369,7 @@ def mmr_diversify(
             for h in remaining:
                 norm = (h.score - lo) / span
                 redundancy = max(
-                    (_jaccard(sigs[id(h)], sigs[id(c)]) for c in chosen),
+                    (jaccard(sigs[id(h)], sigs[id(c)]) for c in chosen),
                     default=0.0,
                 )
                 value = lambda_relevance * norm - (1.0 - lambda_relevance) * redundancy

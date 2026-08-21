@@ -124,6 +124,18 @@ NEWS_INTENTS = {
 LEAD_CHARS = 400
 
 
+def lead_text(hit: RetrievedChunk) -> str:
+    """The article's opening, which only the first passage of a document has.
+
+    Without this, splitting an article into passages would hand every paragraph its
+    own "lead" and erase the distinction between a headline-level match and evidence
+    buried deep in the story.
+    """
+    if hit.chunk.chunk_index != 0:
+        return ""
+    return (hit.chunk.text or "")[:LEAD_CHARS]
+
+
 def words(text: str) -> list[str]:
     return [w.lower() for w in _WORD.findall(text or "")]
 
@@ -201,25 +213,75 @@ def _strip_possessive(span: str) -> str:
     return re.sub(r"[’']s\b", "", span).strip()
 
 
+# Words that belong to the organisation name in front of them, so "Deutsche Bank" and
+# "European Central Bank" survive the split below as single entities.
+ORG_HEAD_WORDS = {
+    "bank", "group", "holdings", "holding", "corp", "corporation", "company", "co",
+    "capital", "partners", "ventures", "management", "advisors", "associates",
+    "technologies", "technology", "systems", "solutions", "industries", "motors",
+    "airlines", "airways", "energy", "pharma", "pharmaceuticals", "media", "networks",
+    "exchange", "commission", "authority", "association", "institute", "university",
+    "bancorp", "financial", "insurance", "securities", "asset", "investments",
+}
+_NAME_PARTICLES = {"jr", "sr", "ii", "iii", "iv"}
+
+
+def _is_camel(token: str) -> bool:
+    """BlackRock / JPMorgan / ByteDance — a self-contained brand, not a name fragment.
+
+    Acronyms are excluded: "AI" in "Taza AI" belongs to the name before it.
+    """
+    return len(token) > 1 and not token.isupper() and any(c.isupper() for c in token[1:])
+
+
+def split_entity_run(span: str) -> list[str]:
+    """Break one run of capitalized words into the entities it actually names.
+
+    A query like "Larry Fink BlackRock private markets" produces the single span
+    "Larry Fink BlackRock", a phrase that appears in no document, which silently drove
+    every entity signal to zero. Splitting recovers the person and the firm as separate
+    entities so each can be matched on its own.
+    """
+    tokens = span.split()
+    if len(tokens) < 3:
+        return [span]
+
+    groups: list[list[str]] = [[tokens[0]]]
+    for token in tokens[1:]:
+        bare = token.strip(".,").lower()
+        current = groups[-1]
+        starts_new = _is_camel(token) or (
+            len(current) >= 2
+            and bare not in ORG_HEAD_WORDS
+            and bare not in ENTITY_SUFFIXES
+            and bare not in _NAME_PARTICLES
+        )
+        if starts_new:
+            groups.append([token])
+        else:
+            current.append(token)
+    return [" ".join(g) for g in groups]
+
+
 def extract_entities(query: str) -> list[str]:
     """Capitalized spans and quoted phrases are the entity candidates."""
     found: list[str] = []
     for quoted in re.findall(r'"([^"]{2,})"', query):
         found.append(quoted.strip())
     stripped = re.sub(r'"[^"]*"', " ", query)
-    for span in _CAP_SPAN.findall(stripped):
-        span = _strip_possessive(span)
-        if not span:
-            continue
-        toks = [t for t in content_terms(span) if t not in ENTITY_SUFFIXES]
-        if not toks:
-            continue
-        # Generic role words ("CEOs", "Board") name a category, not a subject
-        if all(t in ROLE_WORDS for t in toks):
-            continue
-        if len(span.split()) == 1 and span.lower() in STOPWORDS:
-            continue
-        found.append(span)
+    for run in _CAP_SPAN.findall(stripped):
+        for span in split_entity_run(_strip_possessive(run)):
+            if not span:
+                continue
+            toks = [t for t in content_terms(span) if t not in ENTITY_SUFFIXES]
+            if not toks:
+                continue
+            # Generic role words ("CEOs", "Board") name a category, not a subject
+            if all(t in ROLE_WORDS for t in toks):
+                continue
+            if len(span.split()) == 1 and span.lower() in STOPWORDS:
+                continue
+            found.append(span)
     # De-dupe, keep longest first so "Deutsche Bank" wins over "Deutsche"
     uniq: list[str] = []
     for f in sorted(set(found), key=lambda s: -len(s)):
@@ -300,18 +362,22 @@ def entity_signal(plan: QueryPlan, hit: RetrievedChunk) -> dict[str, float]:
             "entity_body": 0.0,
             "entity_any": 1.0,
             "entity_extra": 0.0,
+            "entity_all": 1.0,
         }
 
     title = hit.chunk.title or ""
-    lead = (hit.chunk.text or "")[:LEAD_CHARS]
+    lead = lead_text(hit)
     body = hit.chunk.text or ""
 
     primary, rest = groups[0], groups[1:]
     in_title = 1.0 if _phrase_hit(primary, title) else 0.0
     in_lead = 1.0 if _phrase_hit(primary, lead) else 0.0
     in_body = 1.0 if _phrase_hit(primary, body) else 0.0
+    # Secondary entities count wherever they appear, headline included: in
+    # "Larry Fink BlackRock private markets" the firm is usually in the headline.
+    searchable = f"{title}\n{body}"
     extra = (
-        sum(1 for g in rest if _phrase_hit(g, body)) / len(rest) if rest else 0.0
+        sum(1 for g in rest if _phrase_hit(g, searchable)) / len(rest) if rest else 0.0
     )
     return {
         "entity_title": in_title,
@@ -319,6 +385,9 @@ def entity_signal(plan: QueryPlan, hit: RetrievedChunk) -> dict[str, float]:
         "entity_body": in_body,
         "entity_any": max(in_title, in_lead, in_body),
         "entity_extra": extra,
+        # Every entity the query named is present. "Andy Jassy AWS growth strategy" is
+        # not answered by a Jassy story about Indian retail.
+        "entity_all": 1.0 if max(in_title, in_lead, in_body) > 0.0 and extra >= 1.0 else 0.0,
     }
 
 
@@ -339,7 +408,7 @@ def topic_signal(plan: QueryPlan, hit: RetrievedChunk) -> dict[str, float]:
         }
 
     title_stems = stems(hit.chunk.title)
-    lead_stems = stems((hit.chunk.text or "")[:LEAD_CHARS])
+    lead_stems = stems(lead_text(hit))
     body_stems = stems(f"{hit.chunk.title}\n{hit.chunk.text}")
     sets = {
         "title": set(title_stems),
@@ -397,11 +466,28 @@ def title_shingles(text: str, n: int = 3) -> set[str]:
     return {" ".join(toks[i : i + n]) for i in range(len(toks) - n + 1)}
 
 
-def near_duplicate(a: RetrievedChunk, b: RetrievedChunk, threshold: float = 0.6) -> bool:
-    sa = title_shingles(a.chunk.title)
-    sb = title_shingles(b.chunk.title)
-    if not sa or not sb:
+def jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return len(a & b) / union if union else 0.0
+
+
+def near_duplicate(
+    a: RetrievedChunk,
+    b: RetrievedChunk,
+    threshold: float = 0.6,
+    body_threshold: float = 0.3,
+) -> bool:
+    """Same story from two outlets — a matching headline *and* matching content.
+
+    Requiring both means two passages of one article, which necessarily share a
+    headline, are not mistaken for the same piece of evidence.
+    """
+    title_sim = jaccard(title_shingles(a.chunk.title), title_shingles(b.chunk.title))
+    if title_sim < threshold:
         return False
-    inter = len(sa & sb)
-    union = len(sa | sb)
-    return union > 0 and inter / union >= threshold
+    body_sim = jaccard(
+        title_shingles(a.chunk.text[:600]), title_shingles(b.chunk.text[:600])
+    )
+    return body_sim >= body_threshold
