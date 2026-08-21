@@ -1,0 +1,6 @@
+name: baseline_dense
+contextualize: false
+llm_context: false
+hybrid: false
+rerank: false
+marketplace_weights: false

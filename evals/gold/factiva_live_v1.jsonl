@@ -1,0 +1,16 @@
+{"id":"f001","query":"SoftBank Group","intent":"entity_investigation","must_include_terms":["SoftBank"],"nice_to_have_terms":["Vision Fund","Arm","Son"],"notes":"Entity-only P1"}
+{"id":"f002","query":"What is the recent news involving Masayoshi Son and Arm Holdings?","intent":"entity_investigation","must_include_terms":["Son","Arm"],"nice_to_have_terms":["SoftBank","AI"],"notes":"Composite entity"}
+{"id":"f003","query":"ByteDance","intent":"entity_investigation","must_include_terms":["ByteDance"],"nice_to_have_terms":["TikTok","regulation"]}
+{"id":"f004","query":"Deutche Bank restructuring","intent":"entity_investigation","must_include_terms":["Deutsche Bank"],"nice_to_have_terms":["wealth","cost"],"notes":"Misspelling stress test"}
+{"id":"f005","query":"Abu Dhabi Investment Authority","intent":"entity_investigation","must_include_terms":["Abu Dhabi"],"nice_to_have_terms":["ADIA","investment"]}
+{"id":"f006","query":"private credit market trends","intent":"topical_exploration","must_include_terms":["private credit"],"nice_to_have_terms":["lending","fundraising","default"]}
+{"id":"f007","query":"EU AI Act compliance","intent":"topical_exploration","must_include_terms":["AI Act"],"nice_to_have_terms":["compliance","high-risk","Europe"]}
+{"id":"f008","query":"electric vehicles and battery recycling","intent":"topical_exploration","must_include_terms":["battery"],"nice_to_have_terms":["recycling","EV","minerals"]}
+{"id":"f009","query":"Jerome Powell","intent":"executive_profiling","must_include_terms":["Powell"],"nice_to_have_terms":["Federal Reserve","rates","inflation"]}
+{"id":"f010","query":"Jamie Dimon on the future of the economy","intent":"executive_profiling","must_include_terms":["Dimon"],"nice_to_have_terms":["JPMorgan","economy","fiscal"]}
+{"id":"f011","query":"Andy Jassy AWS growth strategy","intent":"executive_profiling","must_include_terms":["Jassy","AWS"],"nice_to_have_terms":["Amazon","AI","cloud"]}
+{"id":"f012","query":"Larry Fink's annual letter to CEOs","intent":"executive_profiling","must_include_terms":["Fink"],"nice_to_have_terms":["BlackRock","letter","retirement"]}
+{"id":"f013","query":"Christine Lagarde","intent":"executive_profiling","must_include_terms":["Lagarde"],"nice_to_have_terms":["ECB","inflation"]}
+{"id":"f014","query":"Brazil and deforestation rates 2025","intent":"geographic_assessment","must_include_terms":["Brazil","deforestation"],"nice_to_have_terms":["Amazon","2025"]}
+{"id":"f015","query":"Nigeria business climate","intent":"geographic_assessment","must_include_terms":["Nigeria"],"nice_to_have_terms":["inflation","FX","investment"]}
+{"id":"f016","query":"What are key risks in private credit documentation and refinancing?","intent":"risk_compliance","must_include_terms":["private credit"],"nice_to_have_terms":["covenant","refinancing","default"]}

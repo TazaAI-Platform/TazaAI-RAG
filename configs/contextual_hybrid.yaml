@@ -1,0 +1,6 @@
+name: contextual_hybrid
+contextualize: true
+llm_context: false
+hybrid: true
+rerank: true
+marketplace_weights: true

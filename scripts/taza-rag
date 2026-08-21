@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Run CLI without requiring `pip install -e .` entrypoint.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PY="$ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null; then
+  PY="$(command -v python3)"
+else
+  echo "python3 not found" >&2
+  exit 1
+fi
+
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PY" -m taza_rag.cli "$@"
