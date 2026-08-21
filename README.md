@@ -49,7 +49,7 @@ taza-rag eval-retrieve --gold evals/gold/factiva_live_v1.jsonl
 taza-rag answer "EU AI Act compliance"   # needs OPENAI_API_KEY
 ```
 
-## What “good” looks like for the CEO
+## What “good” looks like
 
 - Higher **term_hit@k** / **salience@5** on `factiva_live_v1` by intent
 - Human Relevance/Completeness ≥ 2 on worksheet markdown
