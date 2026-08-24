@@ -30,12 +30,22 @@ app = typer.Typer(
 )
 console = Console()
 
+# Client ids are not passwords, but they identify the trial account and pair with the
+# passwords, so `show-config` output pasted into an issue or shown in a demo would give
+# away half the credential set for nothing.
 _SECRET_KEYS = {
     "openai_api_key",
+    "factiva_rag_client_id",
     "factiva_rag_password",
     "factiva_rag_portal_password",
+    "factiva_rag_username",
+    "factiva_rag_portal_user",
+    "factiva_feed_client_id",
     "factiva_feed_password",
     "factiva_feed_portal_password",
+    "factiva_feed_username",
+    "factiva_feed_portal_user",
+    "factiva_metrics_user_id",
 }
 
 
