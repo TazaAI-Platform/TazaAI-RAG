@@ -20,6 +20,7 @@ from taza_rag.config import settings
 from taza_rag.eval.dj_a1 import judge_a1, judge_model_name
 from taza_rag.eval.retrieval import load_gold
 from taza_rag.factiva.answer import answer_with_factiva
+from taza_rag.factiva.retrieve import FactivaRetrieveError
 from taza_rag.llm import LLMError
 from taza_rag.models import A1Judgment, AnswerResult, Citation, GoldExample
 
@@ -150,9 +151,11 @@ def run_a1_eval(
             result, judgment, evidence = _score_one(
                 ex, raw=False, top_k=top_k, judge_model=judge_model, verify=verify
             )
-        except LLMError as e:
-            # A billing or provider failure is not an evaluation result; record and move on.
-            failures.append(f"{ex.id}: {e}")
+        except (LLMError, FactivaRetrieveError) as e:
+            # A provider failure is not an evaluation result; record and move on. Retrieval
+            # is included because roughly one query in twenty-five fails upstream even
+            # after retries, which is enough to sink a 52-query run near the end.
+            failures.append(f"{ex.id}: {type(e).__name__}: {e}")
             continue
 
         row = {
@@ -194,8 +197,8 @@ def run_a1_eval(
                         "a1": b_judgment.model_dump(),
                     }
                 )
-            except LLMError as e:
-                failures.append(f"{ex.id} (baseline): {e}")
+            except (LLMError, FactivaRetrieveError) as e:
+                failures.append(f"{ex.id} (baseline): {type(e).__name__}: {e}")
 
     summary: dict[str, Any] = {
         "config": rows[0]["config"] if rows else "factiva_quality_v2+ctx",

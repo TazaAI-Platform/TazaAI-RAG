@@ -371,6 +371,47 @@ def test_eval_runs_end_to_end_offline(tmp_path: Path = Path("/tmp/a1_offline")):
     assert "Accuracy gates" in report.with_suffix(".md").read_text()
 
 
+def test_one_upstream_retrieval_failure_does_not_sink_the_whole_run():
+    """A 52-query run takes ~45 minutes and roughly one query in twenty-five fails
+    upstream even after retries, so a raised error would routinely discard the lot."""
+    from taza_rag.factiva.retrieve import FactivaRetrieveError
+
+    tmp = Path("/tmp/a1_partial")
+    tmp.mkdir(parents=True, exist_ok=True)
+    gold = tmp / "gold.jsonl"
+    gold.write_text(
+        "\n".join(
+            GoldExample(
+                id=f"g{i}",
+                query=f"query {i}",
+                intent=SearchIntent.ENTITY_INVESTIGATION,
+                must_include_terms=["Deutsche"],
+            ).model_dump_json()
+            for i in range(1, 4)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = {"n": 0}
+
+    def flaky(q, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise FactivaRetrieveError("Retrieve failed (429) simulated")
+        return _result()
+
+    a1mod.answer_with_factiva = flaky
+    judge_mod.chat_json = lambda *a, **k: dict(PERFECT)
+
+    summary = run_a1_eval(gold, tmp / "report.json", top_k=3)
+    assert summary["n_scored"] == 2, "surviving rows should still be scored"
+    # Recorded in the report, not only printed: a reader must be able to see the mean was
+    # taken over fewer rows than the gold set contains.
+    assert len(summary["errors"]) == 1
+    assert "FactivaRetrieveError" in summary["errors"][0]
+
+
 def test_a_refusal_is_recorded_as_abstention():
     a1mod.answer_with_factiva = lambda q, **kw: _result(
         answer="Insufficient evidence.", abstained=True
