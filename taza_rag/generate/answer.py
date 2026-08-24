@@ -20,8 +20,20 @@ Return JSON with keys: answer (string), abstain (boolean), used_citations (list 
 """
 
 
-def _pack_context(hits: list[RetrievedChunk], max_chunks: int) -> tuple[str, list[RetrievedChunk]]:
-    selected = hits[:max_chunks]
+def _pack_context(
+    hits: list[RetrievedChunk], max_chunks: int, max_tokens: int
+) -> tuple[str, list[RetrievedChunk]]:
+    """Budget by tokens as well as count: answer_max_chunks is shared with the Factiva
+    passage path, where chunks are roughly half this size."""
+    selected: list[RetrievedChunk] = []
+    used = 0
+    for h in hits[:max_chunks]:
+        tokens = len((h.chunk.text or "").split())
+        if selected and used + tokens > max_tokens:
+            break
+        selected.append(h)
+        used += tokens
+
     blocks = []
     for i, h in enumerate(selected, start=1):
         c = h.chunk
@@ -45,7 +57,9 @@ def answer_query(
         hits = simple_rerank(query, hits)
     t2 = time.perf_counter()
 
-    context, selected = _pack_context(hits, settings.answer_max_chunks)
+    context, selected = _pack_context(
+        hits, settings.answer_max_chunks, settings.answer_context_tokens
+    )
     user = f"Question: {query}\n\nSources:\n{context}"
     raw: dict[str, Any] = chat_json(ANSWER_SYSTEM, user, temperature=0.0)
     t3 = time.perf_counter()

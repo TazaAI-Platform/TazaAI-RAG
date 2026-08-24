@@ -99,6 +99,58 @@ def test_a_refusal_is_not_treated_as_an_uncited_claim():
     assert check_citations(claims, set(EVIDENCE)) == []
 
 
+def test_short_factual_sentences_are_still_checked():
+    """A length threshold let the most dangerous case through: 'Revenue hit $9.9bn.'"""
+    for text in (
+        "Profit rose 12%.",
+        "Revenue hit $9.9bn.",
+        "Shares tripled.",
+        "Deutsche Bank cut jobs.",
+    ):
+        claims = split_claims(text)
+        assert [p.kind for p in check_citations(claims, set(EVIDENCE))] == ["uncited"], text
+
+
+def test_a_claim_group_cited_at_its_end_is_not_uncited():
+    """Demanding a marker per sentence flagged ordinary prose, so every answer got rewritten."""
+    ans = (
+        "SoftBank reported net profit of 347.33 billion yen for the quarter. "
+        "The drop was attributed to higher costs [c1]."
+    )
+    ev = {"c1": "SoftBank posted net profit of 347.33 billion yen as higher costs offset gains."}
+    assert verify_answer(ans, ev, check_entailment=False).problems == []
+
+
+def test_inheritance_does_not_launder_an_ungrounded_figure():
+    ans = "SoftBank profit fell to 999.9 billion yen. This came as costs rose [c1]."
+    ev = {"c1": "SoftBank posted net profit of 347.33 billion yen as higher costs offset gains."}
+    kinds = [p.kind for p in verify_answer(ans, ev, check_entailment=False).problems]
+    assert kinds == ["unsupported_figure"]
+
+
+def test_inheritance_stops_at_a_paragraph_boundary():
+    ans = "SoftBank profit fell 18% in the quarter.\n\nCosts rose across segments [c1]."
+    ev = {"c1": "Costs rose across SoftBank segments."}
+    kinds = [p.kind for p in verify_answer(ans, ev, check_entailment=False).problems]
+    assert kinds == ["uncited"]
+
+
+def test_a_paragraph_with_no_citation_at_all_is_still_flagged():
+    ans = "SoftBank profit fell sharply.\nCosts rose materially across every segment."
+    ev = {"c1": "Unrelated text."}
+    kinds = [p.kind for p in verify_answer(ans, ev, check_entailment=False).problems]
+    assert kinds == ["uncited", "uncited"]
+
+
+def test_framing_sentences_are_not_asked_for_citations():
+    for text in (
+        "This is important context to consider.",
+        "The picture here remains mixed overall.",
+    ):
+        claims = split_claims(text)
+        assert check_citations(claims, set(EVIDENCE)) == [], text
+
+
 def test_entailment_flags_an_overstated_commitment():
     """'explore up to $1bn' became 'committed to invest' in a real answer."""
     captured = {}
@@ -146,8 +198,9 @@ def test_labels_are_stripped_before_number_extraction():
 
 
 def test_report_summary_counts_by_kind():
+    # The uncited sentence sits in its own paragraph so it cannot inherit a citation.
     report = verify_answer(
-        "Profit was 9.9 billion euros [c1]. Costs are expected to fall further.",
+        "Profit was 9.9 billion euros [c1].\nCosts are expected to fall further at the bank.",
         EVIDENCE,
         check_entailment=False,
     )

@@ -199,14 +199,17 @@ taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
 
 | A1 criterion | Verification off | Verification on | Delta |
 |--------------|-----------------|-----------------|-------|
-| **Accuracy** (hard gate, all 4 checks) | 0.438 | **0.562** | +0.125 |
-| ├ factual correctness | 0.438 | 0.562 | +0.125 |
-| ├ citation integrity | 0.438 | 0.562 | +0.125 |
-| ├ no hallucinations | 0.688 | **0.875** | +0.188 |
+| **Accuracy** (hard gate, all 4 checks) | 0.438 | **0.688** | +0.250 |
+| ├ factual correctness | 0.438 | 0.750 | +0.312 |
+| ├ citation integrity | 0.438 | 0.688 | +0.250 |
+| ├ no hallucinations | 0.688 | 0.750 | +0.062 |
 | └ contextual integrity | 0.750 | 0.812 | +0.062 |
 | Relevance (1–3) | 2.50 | 2.38 | −0.125 |
-| Completeness (1–3) | 1.94 | 1.69 | −0.250 |
-| Clarity (1–3) | 2.94 | 2.94 | +0.000 |
+| Completeness (1–3) | 1.94 | 1.62 | −0.312 |
+| Clarity (1–3) | 2.94 | 2.88 | −0.062 |
+
+The verification-on column was re-measured after the claim-group fix described below; the
+figures it replaced were produced by a verifier that mis-flagged correctly cited prose.
 
 ### Grounding verification
 
@@ -226,6 +229,16 @@ hallucinate. Only paraphrase-level support needs a model. Anything flagged goes 
 corrective pass, and the rewrite is then re-checked deterministically, since a rewrite can
 introduce its own bad figures. Both reports are kept on the answer, so a residual problem is
 visible rather than silently accepted.
+
+Citation presence is checked per claim **group**, not per sentence. Journalistic prose sources
+a group once, usually at its end, so requiring a marker on every sentence flagged ordinary
+writing as unsourced — it fired on all 16 answers, forcing a needless rewrite each time, and
+the repair pass could not "fix" answers that were already correct. A sentence with no marker
+now inherits its neighbour's, within a paragraph only. Inheritance cannot launder a bad number:
+figures are still checked against the inherited sources, so a fabricated figure in an
+inheriting sentence is still caught. Fixing this cut spurious `uncited` flags from 31 to 7 and
+took post-repair uncited claims to **zero**, which is a deterministic count rather than a
+judge's opinion.
 
 Figure grounding distinguishes three cases, because they are different defects: a number in
 no source is invention, a real number attributed to the wrong chunk is miscitation, and a bare
@@ -267,11 +280,18 @@ It was wrong, for three separate reasons worth recording:
    citation records, so the judge failed citation integrity on answers that were properly
    cited. `rejudge-a1` now refuses a report that stores only citation doc ids.
 
+5. **The verifier demanded a citation on every sentence.** It flagged all 16 answers, including
+   correctly sourced prose that cites a claim group once at its end, so measured citation
+   integrity was depressed by the checking tool rather than by the answers.
+
 The residual failures are real, not judge pedantry. Spot-checking flagged claims against the
 stored evidence by string search confirms them: one answer asserted "record profits" and
 another "substantial market value gains", and neither phrase nor its support appears anywhere
-in the retrieved text. **Citation integrity at 0.625 is the genuine open defect**, with
-`uncited_claim` on 5 of 16 answers and `hallucination` on 3.
+in the retrieved text. **Citation integrity at 0.688 remains the open defect.** The shape of it
+has changed, though: deterministic uncited claims are now zero after repair, so what is left is
+paraphrase-level over-reach — the entailment check flags 31 claims across 16 answers for
+attribution, certainty or magnitude the excerpt does not carry, and the single repair pass does
+not resolve all of them.
 
 Reproduce the judge comparison — the answers are held fixed so only the judge varies:
 
@@ -410,15 +430,20 @@ python scripts/run_tests.py     # stdlib runner, no pytest needed
 pytest tests/                   # if dev extras are installed
 ```
 
-39 offline tests cover entity extraction and splitting, multi-entity tiering,
-document-type detection, stemming, MMR, near-duplicate collapse, and contextual passage
+80 offline tests cover entity extraction and splitting, multi-entity tiering,
+document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
-position penalty). None require network access or API credentials.
+position penalty), claim verification (citation inheritance and its paragraph boundary,
+figure grounding, short-claim detection), and provider-error handling (rate-limit retry,
+quota as fatal, temperature fallback). None require network access or API credentials.
+
+The provider-error and verification paths are the ones a live smoke test cannot reach, so
+they are covered with a fake client rather than by hoping they work.
 
 ## What “good” looks like
 
 - **A1 Accuracy under an independent judge** — the rubric's automatic-fail gate, currently
-  0.625 and limited by citation integrity
+  0.688 and limited by citation integrity
 - `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` beat the `--raw` baseline
 - Coverage per 1k tokens of evidence improves, not just coverage
 - Human Relevance/Completeness ≥ 2 on the generated worksheet
@@ -457,11 +482,11 @@ answer-level A1 scoring with an independent judge, re-judgeable artifacts, and m
 abstention recall (0.800).
 
 **Known gaps, stated plainly:**
-- **Citation integrity is improved but still the weak gate (0.562).** Verification lifted every
-  Accuracy gate, but roughly four in ten answers still carry a claim the sources do not
-  support. The residual failures are mostly sentences the single repair pass did not fix;
-  iterating repair until the deterministic checks are clean is the obvious next step.
-- **Verification trades Completeness for Accuracy** (−0.25). Defensible for a Dow Jones
+- **Citation integrity is improved but still the weak gate (0.688).** Deterministic uncited
+  claims are now zero after repair, so the remainder is paraphrase-level over-reach caught by
+  the entailment check: 31 flagged claims across 16 answers, of which one repair pass clears
+  most but not all. Looping repair until the checks are clean is the obvious next step.
+- **Verification trades Completeness for Accuracy** (−0.31). Defensible for a Dow Jones
   product where Accuracy is the automatic-fail gate, but it is a real cost, not a free win.
 - **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
   on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and

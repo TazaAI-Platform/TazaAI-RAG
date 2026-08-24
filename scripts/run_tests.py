@@ -19,6 +19,7 @@ MODULES = [
     "tests.test_contextual",
     "tests.test_a1_eval",
     "tests.test_verify",
+    "tests.test_llm_transport",
     "tests.test_smoke",
 ]
 
