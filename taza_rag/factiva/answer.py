@@ -32,7 +32,11 @@ Coverage — this is what separates an adequate answer from a good one:
   material, not a target in itself: never pad, repeat, or add commentary to reach it.
 
 Accuracy — these constraints are absolute and outrank coverage:
-- Every significant claim must include a citation marker like [c1], [c2] matching chunk labels.
+- Every sentence stating a fact must end with the citation marker(s) for that specific fact,
+  like [c1] or [c2][c5]. Write the marker in full: [c4], never [4].
+- Attribute each fact to the source that actually carries it. If you cannot point a fact to a
+  specific source, leave the fact out — an extra sentence is worth nothing if it cannot be
+  traced, and covering more ground never justifies a loose citation.
 - Do not invent facts, numbers, names, or dates not present in sources.
 - Carry figures over exactly as the sources state them (amounts, percentages, dates,
   counterparties). Never estimate, round, or combine figures from different sources.

@@ -195,8 +195,31 @@ _CLAIM_VERBS = frozenset(
     surged tripled doubled halved cut raised lowered sold bought acquired divested
     launched exited hired fired appointed named resigned stepped filed sued settled
     posted earned generated grew shrank totalled totaled reached hit added removed
-    approved rejected blocked banned fined invested committed explored valued""".split()
+    approved rejected blocked banned fined invested committed explored valued
+    say announce report disclose confirm deny agree plan expect warn rise fall gain
+    lose climb drop slide jump surge triple double halve raise lower sell buy acquire
+    divest launch exit hire fire appoint resign step file sue settle post earn generate
+    grow shrink total reach add remove approve reject block ban fine invest commit
+    explore value""".split()
 )
+
+
+# Forward-looking statements ("headcount will keep falling") are claims too, and among the
+# riskiest, but the verb list only held finite past forms so they read as non-factual.
+_MODALS = frozenset("will would could should expects expected plans planned forecast".split())
+
+
+def _verb_like(token: str) -> bool:
+    word = re.sub(r"\W", "", token.lower())
+    if not word:
+        return False
+    if word in _CLAIM_VERBS or word in _MODALS:
+        return True
+    # Cheap inflection handling: falling -> fall, rising -> rise, cuts -> cut.
+    for stem in (word[:-3], word[:-3] + "e", word[:-1], word[:-2]):
+        if len(stem) >= 3 and stem in _CLAIM_VERBS:
+            return True
+    return False
 
 
 def _has_factual_content(text: str) -> bool:
@@ -215,7 +238,7 @@ def _has_factual_content(text: str) -> bool:
     # A capitalised token past the opening word signals a named subject.
     if any(t[:1].isupper() for t in tokens[1:] if t[:1].isalpha()):
         return True
-    return any(re.sub(r"\W", "", t.lower()) in _CLAIM_VERBS for t in tokens)
+    return any(_verb_like(t) for t in tokens)
 
 
 def _normalise_digits(text: str) -> str:
@@ -227,6 +250,21 @@ def figures(text: str) -> list[str]:
 
 
 def check_citations(claims: list[Claim], valid_labels: set[str]) -> list[Problem]:
+    factual = [c for c in claims if _has_factual_content(c.text)]
+    # An answer with no marker anywhere is a different failure from a few loose sentences,
+    # and listing every sentence separately buries that. One answer in a 52-query run came
+    # back entirely uncited and the repair pass, handed nine near-identical complaints, did
+    # not fix any of them.
+    if factual and not any(c.labels for c in claims):
+        return [
+            Problem(
+                factual[0].index,
+                "no_citations",
+                f"the answer carries no citation marker at all across {len(factual)} factual "
+                "sentences; every one needs the marker for the source that supports it",
+            )
+        ]
+
     problems: list[Problem] = []
     for c in claims:
         if not _has_factual_content(c.text):

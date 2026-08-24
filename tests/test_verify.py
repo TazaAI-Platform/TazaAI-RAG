@@ -83,9 +83,48 @@ def test_a_year_is_reported_but_never_blocks_a_rewrite():
 
 
 def test_an_uncited_claim_is_caught():
+    """Nothing is cited anywhere here, which is reported as one categorical failure rather
+    than per sentence — see test_a_wholly_uncited_answer_is_one_clear_problem."""
     claims = split_claims("Deutsche Bank is widely expected to keep cutting headcount.")
     problems = check_citations(claims, set(EVIDENCE))
+    assert [p.kind for p in problems] == ["no_citations"]
+
+
+def test_an_uncited_claim_among_cited_ones_is_caught_individually():
+    ans = "Profit rose to 1.2 billion euros [c1].\nHeadcount will keep falling next year."
+    problems = check_citations(split_claims(ans), set(EVIDENCE))
     assert [p.kind for p in problems] == ["uncited"]
+
+
+def test_forward_looking_and_progressive_claims_are_factual():
+    """The verb list held only finite past forms, so "costs are rising" and "headcount will
+    keep falling" read as framing and escaped the citation check entirely."""
+    for text in (
+        "Headcount will keep falling next year.",
+        "Costs are rising across the division.",
+        "The bank is selling its Indian unit.",
+        "Profit is expected to recover.",
+    ):
+        assert vmod._has_factual_content(text), text
+    for text in (
+        "This is important context to consider.",
+        "That is worth bearing in mind.",
+    ):
+        assert not vmod._has_factual_content(text), text
+
+
+def test_a_wholly_uncited_answer_is_one_clear_problem():
+    """Nine near-identical complaints gave the repair pass nothing to act on, and it fixed
+    none of them; one categorical instruction is actionable."""
+    ans = (
+        "The EU AI Act began enforcement on August 2, 2026.\n"
+        "It categorises AI systems by risk level.\n"
+        "Companies face fines of up to 15 million euros."
+    )
+    report = verify_answer(ans, {"c1": "The EU AI Act took effect."}, check_entailment=False)
+    assert [p.kind for p in report.problems] == ["no_citations"]
+    assert "3 factual sentences" in report.problems[0].detail
+    assert report.blocking, "a wholly uncited answer must trigger a rewrite"
 
 
 def test_a_citation_to_a_nonexistent_source_is_caught():
@@ -121,7 +160,8 @@ def test_short_factual_sentences_are_still_checked():
         "Deutsche Bank cut jobs.",
     ):
         claims = split_claims(text)
-        assert [p.kind for p in check_citations(claims, set(EVIDENCE))] == ["uncited"], text
+        kinds = [p.kind for p in check_citations(claims, set(EVIDENCE))]
+        assert kinds == ["no_citations"], f"{text} -> {kinds}"
 
 
 def test_a_claim_group_cited_at_its_end_is_not_uncited():
@@ -152,7 +192,7 @@ def test_a_paragraph_with_no_citation_at_all_is_still_flagged():
     ans = "SoftBank profit fell sharply.\nCosts rose materially across every segment."
     ev = {"c1": "Unrelated text."}
     kinds = [p.kind for p in verify_answer(ans, ev, check_entailment=False).problems]
-    assert kinds == ["uncited", "uncited"]
+    assert kinds == ["no_citations"]
 
 
 def test_framing_sentences_are_not_asked_for_citations():
@@ -232,4 +272,4 @@ def test_an_uncited_claim_is_not_also_reported_for_every_figure():
         EVIDENCE,
         check_entailment=False,
     )
-    assert [p.kind for p in report.problems] == ["uncited"]
+    assert [p.kind for p in report.problems] == ["no_citations"]
