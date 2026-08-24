@@ -62,6 +62,7 @@ MODULES = [
     "tests.test_verify",
     "tests.test_llm_transport",
     "tests.test_repair_loop",
+    "tests.test_cli_output",
     "tests.test_smoke",
 ]
 

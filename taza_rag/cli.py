@@ -6,6 +6,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from taza_rag.config import settings
 from taza_rag.eval.a1_factiva import rejudge_report, run_a1_eval
@@ -139,12 +140,12 @@ def _print_hit(h, show_scores: bool = True) -> None:
     header = f"[bold]#{h.rank}[/bold]"
     if show_scores:
         header += f" ({h.score:.3f})"
-    console.print(f"{header} {c.title}")
+    console.print(f"{header} {escape(c.title or '')}")
     tail = f" | {kind}" if kind else ""
     passages = (c.metadata or {}).get("passage_count")
     if passages:
         tail += f" | passage {c.chunk_index + 1}/{passages}"
-    console.print(f"  {c.source} | {c.published_at} | {c.doc_id}{tail}")
+    console.print(f"  {c.source} | {c.published_at} | {c.doc_id}{tail}", markup=False)
     if show_scores and h.scores:
         semantic = h.scores.get("semantic", 0.0)
         line = (
@@ -161,7 +162,7 @@ def _print_hit(h, show_scores: bool = True) -> None:
             f"penalty={h.scores.get('penalty', 0):.2f}[/dim]"
         )
         console.print(line)
-    console.print(f"  {c.text[:300].replace(chr(10), ' ')}…\n")
+    console.print(f"  {c.text[:300].replace(chr(10), ' ')}…\n", markup=False)
 
 
 @app.command("eval-retrieve")
@@ -235,12 +236,14 @@ def answer_cmd(
         raise typer.Exit(code=3) from e
     console.print(f"[bold]config[/bold]={result.config_name}  abstained={result.abstained}")
     if result.verification:
-        console.print(f"[dim]verification: {result.verification}[/dim]")
+        console.print(f"[dim]verification: {escape(str(result.verification))}[/dim]")
     console.print()
-    console.print(result.answer)
+    # markup=False throughout: rich reads [c1] as a style tag and silently deletes it, so a
+    # correctly cited answer printed as markup looks entirely uncited.
+    console.print(result.answer, markup=False)
     console.print("\nCitations:")
     for c in result.citations:
-        console.print(f"- [{c.doc_id}] {c.title} ({c.source}, {c.published_at})")
+        console.print(f"- [{c.doc_id}] {c.title} ({c.source}, {c.published_at})", markup=False)
     console.print(f"\nLatency ms: {result.latency_ms}")
 
 
@@ -349,7 +352,7 @@ def query_local_cmd(
     if not settings.openai_api_key:
         raise typer.Exit(code=2)
     result = answer_query(HybridIndex.load(index_dir or settings.index_dir), q)
-    console.print(result.answer)
+    console.print(result.answer, markup=False)
 
 
 @app.command()

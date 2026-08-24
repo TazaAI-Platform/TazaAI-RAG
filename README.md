@@ -476,13 +476,19 @@ specifically so it survives those `except Exception` handlers and cannot be swal
 the network also cut the suite from 7.0s to 1.8s, which is the same fact from the other side:
 those tests had been going over the wire.
 
-88 offline tests cover entity extraction and splitting, multi-entity tiering,
+93 offline tests cover entity extraction and splitting, multi-entity tiering,
 document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
 position penalty), claim verification (citation inheritance and its paragraph boundary,
 figure grounding, short-claim detection), the repair loop (convergence, budget, and the
-guarantee that a bad rewrite is discarded), and provider-error handling (rate-limit retry,
-quota as fatal, temperature fallback). None require network access or API credentials.
+guarantee that a bad rewrite is discarded), provider-error handling (rate-limit retry,
+quota as fatal, temperature fallback), and CLI rendering. None require network access or
+API credentials.
+
+That last one earns its place: rich reads `[c1]` as a style tag and silently deletes it, so
+`taza-rag answer` was printing correctly cited answers with every marker stripped — visibly
+uncited on screen while every stored artifact was intact. Untrusted text is now printed with
+markup disabled, and the tests assert on rendered output rather than on the string passed in.
 
 The provider-error, verification and repair paths are the ones a live smoke test cannot
 reach, so they are covered with a fake client rather than by hoping they work.
