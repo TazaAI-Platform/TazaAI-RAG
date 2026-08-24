@@ -252,6 +252,44 @@ Verification does most of the mechanical work it claims: 118 unsupported claims 
 across 52 answers, 15 left after repair, 37 of 52 answers fully clean at exit, at 1.35
 repair calls per answer.
 
+#### Two attempts to raise Completeness, both reverted
+
+Completeness was the binding dimension at 1.71, and the diagnosis was unambiguous: of the
+320 aspects the judge listed as missing, all 246 that name a chunk name one the generator
+already had, and **none point outside its context**. Retrieval was delivering the material;
+generation was dropping it. The generator wrote a median 96 words from 2,505 words of
+evidence — 3.8% — leaving a median six supported facts unused, with only 2 of 52 answers
+reaching Completeness 3.
+
+So the prompt was rewritten to ask for each distinct substantive point with its own figure,
+at 200–350 words, with the accuracy constraints stated as outranking coverage. Then, when
+that cost citation integrity, a second version required a marker on every factual sentence.
+Both were measured on all 52 queries:
+
+| | baseline prompt | + coverage | + coverage & per-sentence cites |
+|---|---|---|---|
+| **Accuracy** (hard gate) | **0.538** | 0.442 | 0.462 |
+| ├ citation integrity | 0.577 | 0.481 | 0.558 |
+| └ contextual integrity | 0.673 | 0.731 | 0.558 |
+| Relevance | 2.42 | 2.67 | 2.50 |
+| Completeness | 1.71 | **1.90** | 1.73 |
+| Overall pass | 0.365 | 0.385 | 0.308 |
+| Median answer words | 96 | 131 | 121 |
+| Completeness = 1 | 17 | **7** | 15 |
+
+**The concise prompt ships, and the coverage work is reverted.** Coverage did what it was
+asked to do — Completeness +0.19, answers scoring 1 cut from 17 to 7, Relevance +0.25 — but
+it cost 0.096 of Accuracy, and Accuracy is A1's automatic-fail gate. At n=52 one query is
+worth 0.019, so the Accuracy loss (5 queries) is real while the overall-pass gain (1 query)
+is noise. The second attempt recovered citation integrity and immediately gave the
+Completeness back, ending worse than either.
+
+The mechanism is worth stating because it constrains any future attempt: citation integrity
+is a **per-answer binary gate**, so each additional claim is another chance to fail it. Going
+from 96 to 131 words took judge-observed citation failures from 22 to 27 of 52. Covering more
+ground therefore cannot be bought with prompt instructions alone — every added claim has to
+be individually verifiable, which is a verification problem rather than a wording one.
+
 #### A quarter of answers were wrongly recorded as refusals
 
 The run initially reported a 0.250 abstention rate on a gold set where every query is
@@ -621,7 +659,10 @@ abstention recall (0.800).
   (0.25), `risk_compliance` and `brand_perception` (0.33).
 - **Completeness is the binding dimension now, not citation integrity.**
   `missing_narrative` is the top failure tag on 41 of 52 answers, and mean Completeness is
-  1.71 against a pass threshold of 2.
+  1.71 against a pass threshold of 2. Two prompt-level attempts to fix it were measured and
+  reverted: coverage is purchasable, but only at a worse price in Accuracy. The material is
+  in the context, so the remaining route is per-claim verification strong enough to let an
+  answer carry more claims safely.
 - **The upstream API fails a few percent of calls.** Two of 52 queries hit
   `All 3 query variants failed` during one validation pass and both succeeded on retry, and
   a single 429 previously aborted an entire run five minutes in. Rate limits now get extra
