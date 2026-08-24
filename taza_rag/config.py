@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     retrieve_sparse_k: int = 40
     retrieve_fuse_k: int = 50
     rerank_top_k: int = 10
+    # Deliberately not chat_model: a model scoring its own output measures self-agreement.
+    # gpt-4o-mini judging itself passed answers containing claims absent from the sources.
+    # Empty falls back to chat_model.
+    judge_model: str = "gpt-5"
     answer_max_chunks: int = 16
     # Evidence budget for generation. Both retrieval paths get the same token cost,
     # so passage retrieval spends its saving on more sources rather than less evidence.

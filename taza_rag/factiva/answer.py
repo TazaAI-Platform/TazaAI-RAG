@@ -123,6 +123,7 @@ def answer_with_factiva(
         answer=str(raw_json.get("answer") or ""),
         citations=citations,
         retrieved=selected,
+        context=context,
         abstained=bool(raw_json.get("abstain")),
         latency_ms={
             "retrieve": (t1 - t0) * 1000,

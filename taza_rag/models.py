@@ -91,6 +91,9 @@ class AnswerResult(BaseModel):
     answer: str
     citations: list[Citation]
     retrieved: list[RetrievedChunk]
+    # The exact context string sent to the generator. A judge shown anything less can
+    # fail a claim as unsupported when the support was simply withheld from it.
+    context: str = ""
     abstained: bool = False
     latency_ms: dict[str, float] = Field(default_factory=dict)
     config_name: str = "default"

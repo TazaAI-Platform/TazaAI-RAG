@@ -4,6 +4,7 @@ The point is that the whole scoring path is verifiable without spending credits 
 hitting the live API, so a billing problem can never be mistaken for a broken judge.
 """
 
+import json
 from pathlib import Path
 
 import taza_rag.eval.a1_factiva as a1mod
@@ -99,6 +100,111 @@ def test_context_is_budgeted_by_tokens_not_chunk_count():
     assert len(picked_huge) == 1 and text
 
 
+def test_judge_model_is_separable_from_the_generator():
+    """A judge scoring its own output measures self-agreement, so it must be swappable."""
+    from taza_rag.config import settings
+    from taza_rag.eval.dj_a1 import judge_model_name
+
+    original_judge, original_chat = settings.judge_model, settings.chat_model
+    try:
+        settings.chat_model = "gpt-4o-mini"
+        settings.judge_model = ""
+        assert judge_model_name() == "gpt-4o-mini"  # falls back to the generator
+        settings.judge_model = "gpt-5"
+        assert judge_model_name() == "gpt-5"
+        assert judge_model_name("o3") == "o3"  # explicit argument wins
+    finally:
+        settings.judge_model, settings.chat_model = original_judge, original_chat
+
+    seen = {}
+
+    def fake(system, user, model=None, **kw):
+        seen["model"] = model
+        return dict(PERFECT)
+
+    judge_mod.chat_json = fake
+    judge_a1("q1", _result(), "excerpts", model="gpt-4.1")
+    assert seen["model"] == "gpt-4.1"
+
+
+def test_rejudge_scores_the_same_answers_and_reports_disagreement():
+    from taza_rag.eval.a1_factiva import rejudge_report
+
+    tmp = Path("/tmp/a1_rejudge")
+    tmp.mkdir(parents=True, exist_ok=True)
+    source = tmp / "source.json"
+    source.write_text(
+        json.dumps(
+            {
+                "config": "factiva_quality_v2+ctx",
+                "generator_model": "gpt-4o-mini",
+                "judge_model": "gpt-4o-mini",
+                "rows": [
+                    {
+                        "id": "g1",
+                        "intent": "entity_investigation",
+                        "query": "Deutsche Bank restructuring",
+                        "config": "factiva_quality_v2+ctx",
+                        "expect_abstention": False,
+                        "abstained": False,
+                        "accuracy_pass": True,
+                        "overall_pass": True,
+                        "answer": "Deutsche Bank cut costs [c1].",
+                        "citations": ["d1"],
+                        "evidence": "[c1] Deutsche Bank cuts costs",
+                        "a1": {
+                            "accuracy": {g: True for g in GATES},
+                            "relevance": {"score": 3, "notes": ""},
+                            "completeness": {"score": 3, "notes": ""},
+                            "clarity": {"score": 3, "notes": ""},
+                            "missing_aspects": [],
+                            "failure_tags": [],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def stricter(system, user, model=None, **kw):
+        captured["user"] = user
+        return dict(HALLUCINATED)
+
+    judge_mod.chat_json = stricter
+    summary = rejudge_report(source, tmp / "out.json", judge_model="gpt-5")
+
+    # The stored answer and its evidence are what get re-scored, not a fresh generation
+    assert "Deutsche Bank cut costs" in captured["user"]
+    assert "[c1] Deutsche Bank cuts costs" in captured["user"]
+    assert summary["judge_model"] == "gpt-5"
+    assert summary["previous_judge_model"] == "gpt-4o-mini"
+    # A stricter judge flips the gate, and the disagreement is reported per query
+    assert summary["accuracy_pass_rate"] == 0.0
+    assert summary["previous"]["accuracy_pass_rate"] == 1.0
+    assert summary["judge_agreement_rate"] == 0.0
+    assert summary["judge_disagreements"][0]["changed"]["accuracy"] == [True, False]
+
+
+def test_rejudge_refuses_a_report_without_stored_evidence():
+    from taza_rag.eval.a1_factiva import rejudge_report
+
+    tmp = Path("/tmp/a1_rejudge_bad")
+    tmp.mkdir(parents=True, exist_ok=True)
+    source = tmp / "old.json"
+    source.write_text(
+        json.dumps({"rows": [{"id": "g1", "query": "q", "answer": "a", "evidence": ""}]}),
+        encoding="utf-8",
+    )
+    try:
+        rejudge_report(source, tmp / "out.json", judge_model="gpt-5")
+        raise AssertionError("should have refused")
+    except ValueError as e:
+        assert "no stored evidence" in str(e)
+
+
 def test_accuracy_is_a_hard_gate():
     """All four checks must hold; one failure fails Accuracy regardless of the rest."""
     judge_mod.chat_json = lambda *a, **k: dict(HALLUCINATED)
@@ -119,6 +225,26 @@ def test_overall_pass_needs_two_or_better_on_every_dimension():
     j = judge_a1("q1", _result(), "excerpts")
     assert j.accuracy.pass_ is True
     assert j.overall_pass is False
+
+
+def test_judge_sees_the_full_context_the_generator_saw():
+    """Truncating evidence for the judge fails supported claims as unsupported."""
+    from taza_rag.eval.a1_factiva import _excerpts
+
+    long_body = "Deutsche Bank reported record profits. " + ("filler sentence. " * 200)
+    result = _result()
+    result.retrieved[0].chunk.text = long_body
+    result.context = f"[c1] doc_id=d1 | wsj.com | 2026-07-01 | Story\n{long_body}"
+
+    evidence = _excerpts(result)
+    assert "record profits" in evidence
+    assert len(evidence) > 900
+    assert evidence == result.context
+
+    # Without a recorded context, the fallback must still not truncate the body
+    result.context = ""
+    assert "record profits" in _excerpts(result)
+    assert long_body.strip() in _excerpts(result)
 
 
 def test_judge_sees_only_the_evidence_the_answer_was_given():

@@ -16,7 +16,8 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 | Local index (ablation) | Dense embeddings + BM25 (`rank-bm25`, NumPy cosine) |
 | Config / CLI | `pydantic-settings`, Typer, Rich |
 | HTTP | `httpx` |
-| Generation / A1 judge | OpenAI `gpt-4o-mini` chat + `text-embedding-3-small` (not required for core retrieve path) |
+| Generation | OpenAI `gpt-4o-mini` (not required for core retrieve path) |
+| A1 judge | `gpt-5` by default — deliberately not the generator, which inflated its own scores |
 
 ## Architecture
 
@@ -193,22 +194,48 @@ taza-rag eval-a1 --compare                                  # vs single-call bas
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
 ```
 
-16 gold queries, `top_k=10`, `gpt-4o-mini` as both generator and judge:
+16 gold queries, `top_k=10`, generator `gpt-4o-mini`, judge `gpt-5`:
 
-| A1 criterion | Baseline | Quality + contextual | Delta |
-|--------------|----------|----------------------|-------|
-| **Accuracy** (hard gate, all 4 checks) | 0.938 | **1.000** | +0.062 |
-| Relevance (1–3) | 3.00 | 3.00 | +0.00 |
-| Completeness (1–3) | 2.81 | 2.62 | −0.19 |
-| Clarity (1–3) | 2.88 | **3.00** | +0.12 |
-| Overall pass rate | 0.938 | **1.000** | +0.062 |
+| A1 criterion | Score | Note |
+|--------------|-------|------|
+| **Accuracy** (hard gate, all 4 checks) | **0.625** | citation integrity is the weak gate at 0.625 |
+| Relevance (1–3) | 2.44 | |
+| Completeness (1–3) | 2.00 | judge-independent; see below |
+| Clarity (1–3) | 2.94 | |
+| Overall pass rate | 0.562 | |
 
-All four Accuracy gates — factual correctness, citation integrity, no hallucinations,
-contextual integrity — pass at 1.000, across all five intents. Accuracy is the rubric's
-automatic-fail gate, so this is the number that matters most.
+#### Why an earlier version of this file claimed Accuracy 1.000
 
-**The Completeness gap is a judge ceiling, not a retrieval defect.** Six queries score 2
-instead of 3, and three independent fixes each moved it by exactly zero:
+It was wrong, for three separate reasons worth recording:
+
+1. **The judge was grading its own homework.** `gpt-4o-mini` generating *and* scoring gave
+   Accuracy 0.812; `gpt-5` scoring the identical answers gave 0.625. Per-query agreement
+   between the two judges is only 0.250 — they disagree on 12 of 16 queries. The judge is
+   now a separate, stronger model by default (`judge_model`, `--judge-model`).
+2. **The judge was shown less evidence than the generator.** Excerpts were truncated to 900
+   characters while the generator received the full passage, so supported claims were failed
+   as unsupported. This alone accounted for most of the apparent collapse: `gpt-5` Accuracy
+   was 0.125 before the fix and 0.625 after. `AnswerResult.context` now records the verbatim
+   context and the judge scores against exactly that.
+3. **n=16 is small and the corpus is live.** Three runs of the same configuration produced
+   Accuracy 1.000, 0.875 and 0.812. One query is worth 6.25 points, so a single perfect run
+   is consistent with a true pass rate near 0.80.
+
+The residual failures are real, not judge pedantry. Spot-checking flagged claims against the
+stored evidence by string search confirms them: one answer asserted "record profits" and
+another "substantial market value gains", and neither phrase nor its support appears anywhere
+in the retrieved text. **Citation integrity at 0.625 is the genuine open defect**, with
+`uncited_claim` on 5 of 16 answers and `hallucination` on 3.
+
+Reproduce the judge comparison — the answers are held fixed so only the judge varies:
+
+```bash
+taza-rag eval-a1 --top-k 10                       # generate + judge, stores evidence
+taza-rag rejudge-a1 --judge-model gpt-4o-mini     # re-score the same answers
+```
+
+**The Completeness ceiling is real and judge-independent.** Both judges score it 2.00 on the
+same answers, and three independent fixes each moved it by exactly zero:
 
 | Attempted fix | Completeness | Accuracy |
 |---------------|--------------|----------|
@@ -221,10 +248,9 @@ Reading what the judge asks for explains why: "broader market implications", "im
 climate change", "potential risks associated with AI investments". These are requests for
 interpretation that a licensed news corpus does not contain, and that the generation prompt
 deliberately refuses to supply. Chasing them means speculating, which is precisely what the
-Accuracy gate fails an answer for — and the baseline demonstrates the trade-off, scoring
-higher Completeness while failing Accuracy on one query. The judge is one `gpt-4o-mini`
-interpretation of "narrative completeness", not a Dow Jones evaluator; calibrating these six
-against a human scorer is the next step, and the `.md` worksheet exists for exactly that.
+Accuracy gate fails an answer for. Neither judge is a Dow Jones evaluator, so calibrating
+these six against a human scorer is still the next step, and the `.md` worksheet exists for
+exactly that.
 
 Evidence for generation is budgeted by **tokens, not chunk count** — passages are about half
 the size of an article, so a fixed chunk count silently handed the generator half the
@@ -294,6 +320,8 @@ taza-rag eval-retrieve --limit 5 --compare    # vs single-call baseline
 taza-rag answer "EU AI Act compliance"
 taza-rag answer "EU AI Act compliance" --raw   # baseline retrieval, for comparison
 taza-rag eval-a1 --compare                     # Accuracy gate + R/C/Clarity vs baseline
+taza-rag eval-a1 --judge-model gpt-4.1         # swap the judge, not the generator
+taza-rag rejudge-a1 --judge-model gpt-5        # re-score stored answers, judge isolated
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl   # refusal behaviour
 
 # Local hybrid index (needs embeddings provider)
@@ -343,7 +371,8 @@ position penalty). None require network access or API credentials.
 
 ## What “good” looks like
 
-- **A1 Accuracy passes at 1.000** — it is the rubric's automatic-fail gate
+- **A1 Accuracy under an independent judge** — the rubric's automatic-fail gate, currently
+  0.625 and limited by citation integrity
 - `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` beat the `--raw` baseline
 - Coverage per 1k tokens of evidence improves, not just coverage
 - Human Relevance/Completeness ≥ 2 on the generated worksheet
@@ -377,12 +406,18 @@ tests/
 
 **Now:** Factiva retrieve quality loop, intent-aware ranking, contextual passage
 retrieval, offline-capable retrieval metrics including cost-normalized coverage, and
-answer-level A1 scoring with a measured Accuracy gate (1.000) and abstention recall (0.800).
+answer-level A1 scoring with an independent judge, re-judgeable artifacts, and measured
+abstention recall (0.800).
 
 **Known gaps, stated plainly:**
-- **The A1 judge is an LLM, not a human.** Accuracy 1.000 and Completeness 2.62 are one
-  `gpt-4o-mini` reading of the rubric. The Completeness ceiling in particular needs human
-  calibration on the six affected queries before it can be trusted or acted on.
+- **Citation integrity is the open defect (0.625).** Roughly a third of answers carry a claim
+  that is uncited or not supported by the retrieved text. This is a generation-side problem —
+  retrieval supplies the evidence, the answer overstates it — and it is the next thing to fix.
+- **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
+  on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
+  no A1 figure here has been calibrated against a human scorer.
+- **n=16 with a live corpus is not a stable metric.** Repeat runs of one configuration moved
+  Accuracy by 0.19. Expanding gold matters more than further ranking work.
 - **Gold covers 5 of the 10 Factiva intents.** `industry_scan`, `event_tracking`,
   `known_item`, `competitive_intel` and `brand_perception` have no rows yet.
 - **Abstention gold is 5 queries and one label is arguable** (`a005`, confidential ECB
@@ -394,6 +429,8 @@ answer-level A1 scoring with a measured Accuracy gate (1.000) and abstention rec
   see the caveats above on metric saturation and tier-ordered ranking.
 
 **Next candidates:**
+- Fix citation integrity: require a citation marker per sentence and verify each claim's
+  support before returning, rather than trusting the generator to self-police
 - Human calibration of the six Completeness-limited queries against the A1 rubric
 - Cross-encoder / vendor reranker on fused candidates
 - Expand gold to the remaining five intents, and to a harder set with headroom

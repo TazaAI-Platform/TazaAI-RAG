@@ -101,27 +101,45 @@ def embed_texts(texts: list[str], model: str | None = None) -> list[list[float]]
     return out
 
 
+def _completion(model: str, system: str, user: str, temperature: float, json_mode: bool) -> str:
+    """One chat call, tolerant of models that reject a fixed temperature.
+
+    Reasoning models only accept their default sampling settings, so a judge run
+    must not fail merely because it asked for determinism.
+    """
+    client = _client()
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    kwargs: dict[str, Any] = {"model": model, "messages": messages}
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    def call(with_temperature: bool) -> Any:
+        extra = {"temperature": temperature} if with_temperature else {}
+        return _call_with_retry(lambda: client.chat.completions.create(**kwargs, **extra))
+
+    try:
+        resp = call(True)
+    except LLMError as e:
+        msg = str(e)
+        if "temperature" not in msg or (
+            "unsupported" not in msg.lower() and "not support" not in msg.lower()
+        ):
+            raise
+        resp = call(False)
+    return resp.choices[0].message.content or ""
+
+
 def chat_json(
     system: str,
     user: str,
     model: str | None = None,
     temperature: float = 0.0,
 ) -> dict[str, Any]:
-    client = _client()
-    model = model or settings.chat_model
-    resp = _call_with_retry(
-        lambda: client.chat.completions.create(
-            model=model,
-            temperature=temperature,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-    )
-    content = resp.choices[0].message.content or "{}"
-    return json.loads(content)
+    content = _completion(model or settings.chat_model, system, user, temperature, True)
+    return json.loads(content or "{}")
 
 
 def chat_text(
@@ -130,16 +148,4 @@ def chat_text(
     model: str | None = None,
     temperature: float = 0.0,
 ) -> str:
-    client = _client()
-    model = model or settings.chat_model
-    resp = _call_with_retry(
-        lambda: client.chat.completions.create(
-            model=model,
-            temperature=temperature,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-    )
-    return (resp.choices[0].message.content or "").strip()
+    return _completion(model or settings.chat_model, system, user, temperature, False).strip()

@@ -16,7 +16,8 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 
-from taza_rag.eval.dj_a1 import judge_a1
+from taza_rag.config import settings
+from taza_rag.eval.dj_a1 import judge_a1, judge_model_name
 from taza_rag.eval.retrieval import load_gold
 from taza_rag.factiva.answer import answer_with_factiva
 from taza_rag.llm import LLMError
@@ -28,10 +29,17 @@ GATES = ("factual_correctness", "citation_integrity", "no_hallucinations", "cont
 
 
 def _excerpts(result: AnswerResult) -> str:
-    """The judge must score against exactly the evidence the answer was given."""
+    """The judge must score against exactly the evidence the answer was given.
+
+    Truncating here silently penalised Accuracy: the generator saw the full passage
+    while the judge saw the first 900 characters, so supported claims were flagged as
+    unsupported. Prefer the verbatim context the generator received.
+    """
+    if result.context:
+        return result.context
     return "\n\n".join(
         f"[c{i}] {h.chunk.title} | {h.chunk.source} | {h.chunk.published_at or 'n/a'}\n"
-        f"{h.chunk.text[:900]}"
+        f"{h.chunk.text}"
         for i, h in enumerate(result.retrieved, start=1)
     )
 
@@ -40,10 +48,13 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
-def _score_one(ex: GoldExample, *, raw: bool, top_k: int) -> tuple[AnswerResult, A1Judgment]:
+def _score_one(
+    ex: GoldExample, *, raw: bool, top_k: int, judge_model: str | None = None
+) -> tuple[AnswerResult, A1Judgment, str]:
     result = answer_with_factiva(ex.query, top_k=top_k, intent=ex.intent, raw=raw)
-    judgment = judge_a1(ex.id, result, _excerpts(result))
-    return result, judgment
+    evidence = _excerpts(result)
+    judgment = judge_a1(ex.id, result, evidence, model=judge_model)
+    return result, judgment, evidence
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -116,6 +127,7 @@ def run_a1_eval(
     top_k: int = 8,
     limit: int | None = None,
     compare_baseline: bool = False,
+    judge_model: str | None = None,
 ) -> dict[str, Any]:
     gold = load_gold(gold_path)
     if limit:
@@ -127,7 +139,9 @@ def run_a1_eval(
 
     for ex in gold:
         try:
-            result, judgment = _score_one(ex, raw=False, top_k=top_k)
+            result, judgment, evidence = _score_one(
+                ex, raw=False, top_k=top_k, judge_model=judge_model
+            )
         except LLMError as e:
             # A billing or provider failure is not an evaluation result; record and move on.
             failures.append(f"{ex.id}: {e}")
@@ -146,12 +160,17 @@ def run_a1_eval(
             "answer": result.answer,
             "citations": [c.doc_id for c in result.citations],
             "latency_ms": result.latency_ms,
+            # Kept so a different judge can score this exact answer later; re-generating
+            # would change the answer and confound a judge comparison.
+            "evidence": evidence,
         }
         rows.append(row)
 
         if compare_baseline:
             try:
-                b_result, b_judgment = _score_one(ex, raw=True, top_k=top_k)
+                b_result, b_judgment, _ = _score_one(
+                    ex, raw=True, top_k=top_k, judge_model=judge_model
+                )
                 base_rows.append(
                     {
                         "id": ex.id,
@@ -169,6 +188,8 @@ def run_a1_eval(
     summary: dict[str, Any] = {
         "config": rows[0]["config"] if rows else "factiva_quality_v2+ctx",
         "n": len(gold),
+        "generator_model": settings.chat_model,
+        "judge_model": judge_model_name(judge_model),
         "judge_model_note": "LLM judge; scores vary slightly between runs",
         **_aggregate(rows),
         "errors": failures,
@@ -182,6 +203,116 @@ def run_a1_eval(
     _write_markdown(summary, report_path.with_suffix(".md"))
     _print(summary)
     return summary
+
+
+def rejudge_report(
+    source_report: Path,
+    report_path: Path,
+    *,
+    judge_model: str,
+) -> dict[str, Any]:
+    """Re-score the answers stored in a previous report with a different judge.
+
+    Holding the answers fixed is the only way to attribute a score change to the judge
+    rather than to generation variance or a shifting live corpus.
+    """
+    source = json.loads(source_report.read_text(encoding="utf-8"))
+    old_rows = source.get("rows") or []
+    missing_evidence = [r["id"] for r in old_rows if not r.get("evidence")]
+    if missing_evidence:
+        raise ValueError(
+            f"{source_report} has no stored evidence for {missing_evidence[:3]}; "
+            "re-run `eval-a1` to record it before re-judging."
+        )
+
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+    disagreements: list[dict[str, Any]] = []
+
+    for old in old_rows:
+        stub = AnswerResult(
+            query=old["query"],
+            answer=old["answer"],
+            citations=[],
+            retrieved=[],
+            abstained=old["abstained"],
+            config_name=old["config"],
+        )
+        try:
+            judgment = judge_a1(old["id"], stub, old["evidence"], model=judge_model)
+        except LLMError as e:
+            failures.append(f"{old['id']}: {e}")
+            continue
+
+        row = {**old, "a1": judgment.model_dump()}
+        row["accuracy_pass"] = judgment.accuracy.pass_
+        row["overall_pass"] = judgment.overall_pass
+        rows.append(row)
+
+        before, after = old["a1"], row["a1"]
+        changed = {
+            k: [before[k]["score"], after[k]["score"]]
+            for k in ("relevance", "completeness", "clarity")
+            if before[k]["score"] != after[k]["score"]
+        }
+        if old["accuracy_pass"] != row["accuracy_pass"]:
+            changed["accuracy"] = [old["accuracy_pass"], row["accuracy_pass"]]
+        if changed:
+            disagreements.append({"id": old["id"], "query": old["query"], "changed": changed})
+
+    summary: dict[str, Any] = {
+        "config": source.get("config", "unknown"),
+        "n": len(old_rows),
+        "generator_model": source.get("generator_model", "unknown"),
+        "judge_model": judge_model,
+        "rejudged_from": str(source_report),
+        "previous_judge_model": source.get("judge_model", "unknown"),
+        "judge_model_note": "same stored answers, different judge",
+        **_aggregate(rows),
+        "judge_disagreements": disagreements,
+        "judge_agreement_rate": 1.0 - (len(disagreements) / len(rows) if rows else 0.0),
+        "errors": failures,
+        "rows": rows,
+    }
+    summary["previous"] = _aggregate(old_rows)
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _write_markdown(summary, report_path.with_suffix(".md"))
+    _print_rejudge(summary)
+    return summary
+
+
+def _print_rejudge(summary: dict[str, Any]) -> None:
+    prev = summary["previous"]
+    table = Table(
+        title=f"Judge swap — {summary['previous_judge_model']} → {summary['judge_model']}"
+    )
+    table.add_column("Metric")
+    table.add_column(str(summary["previous_judge_model"]), justify="right")
+    table.add_column(str(summary["judge_model"]), justify="right")
+    table.add_column("Delta", justify="right")
+
+    for label, key, fmt in (
+        ("Accuracy pass rate", "accuracy_pass_rate", "{:.3f}"),
+        ("Relevance (1-3)", "mean_relevance", "{:.2f}"),
+        ("Completeness (1-3)", "mean_completeness", "{:.2f}"),
+        ("Clarity (1-3)", "mean_clarity", "{:.2f}"),
+        ("Overall pass rate", "overall_pass_rate", "{:.3f}"),
+    ):
+        a, b = prev.get(key), summary.get(key)
+        if a is None or b is None:
+            continue
+        table.add_row(label, fmt.format(a), fmt.format(b), f"{b - a:+.3f}")
+    console.print(table)
+    console.print(
+        f"Per-query agreement: {summary['judge_agreement_rate']:.3f} "
+        f"({len(summary['judge_disagreements'])} of {len(summary['rows'])} scored differently)"
+    )
+    for d in summary["judge_disagreements"][:8]:
+        console.print(f"  [{d['id']}] {d['query'][:52]} → {d['changed']}")
+    if summary["errors"]:
+        console.print(f"[yellow]{len(summary['errors'])} failed:[/yellow] {summary['errors'][:3]}")
 
 
 def _print(summary: dict[str, Any]) -> None:

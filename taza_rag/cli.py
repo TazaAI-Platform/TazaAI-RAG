@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 
 from taza_rag.config import settings
-from taza_rag.eval.a1_factiva import run_a1_eval
+from taza_rag.eval.a1_factiva import rejudge_report, run_a1_eval
 from taza_rag.eval.factiva_retrieval import run_factiva_retrieval_eval
 from taza_rag.eval.run import run_eval
 from taza_rag.factiva.answer import answer_with_factiva
@@ -247,6 +247,9 @@ def eval_a1_cmd(
     compare: bool = typer.Option(
         False, "--compare/--no-compare", help="Also score the single-call baseline (2x LLM calls)"
     ),
+    judge_model: Optional[str] = typer.Option(
+        None, "--judge-model", help="Score with a different model than the generator"
+    ),
 ) -> None:
     """Answer-level A1 eval: Accuracy gate + Relevance / Completeness / Clarity."""
     if not settings.openai_api_key:
@@ -255,9 +258,31 @@ def eval_a1_cmd(
             "A1 Accuracy and Clarity are answer-level and need a generated answer to score."
         )
         raise typer.Exit(code=2)
-    run_a1_eval(gold, report, top_k=top_k, limit=limit, compare_baseline=compare)
+    run_a1_eval(
+        gold, report, top_k=top_k, limit=limit, compare_baseline=compare, judge_model=judge_model
+    )
     console.print(f"\nJSON → {report}")
     console.print(f"Worksheet → {report.with_suffix('.md')}")
+
+
+@app.command("rejudge-a1")
+def rejudge_a1_cmd(
+    judge_model: str = typer.Option(..., "--judge-model", help="e.g. gpt-5, gpt-4.1, o3"),
+    source: Path = typer.Option(Path("evals/reports/a1_latest.json"), "--source"),
+    report: Optional[Path] = typer.Option(None, "--report"),
+) -> None:
+    """Re-score stored answers with a different judge, isolating the judge from generation."""
+    if not settings.openai_api_key:
+        console.print("[yellow]OPENAI_API_KEY not set.[/yellow]")
+        raise typer.Exit(code=2)
+    out = report or source.with_name(f"{source.stem}_judge_{judge_model.replace('.', '')}.json")
+    try:
+        rejudge_report(source, out, judge_model=judge_model)
+    except (ValueError, LLMError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=3) from e
+    console.print(f"\nJSON → {out}")
+    console.print(f"Worksheet → {out.with_suffix('.md')}")
 
 
 # --- Local sample-index tools (ablations / offline) ---
