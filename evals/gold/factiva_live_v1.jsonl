@@ -1,16 +1,52 @@
 {"id":"f001","query":"SoftBank Group","intent":"entity_investigation","must_include_terms":["SoftBank"],"nice_to_have_terms":["Vision Fund","Arm","Son"],"notes":"Entity-only P1"}
-{"id":"f002","query":"What is the recent news involving Masayoshi Son and Arm Holdings?","intent":"entity_investigation","must_include_terms":["Son","Arm"],"nice_to_have_terms":["SoftBank","AI"],"notes":"Composite entity"}
+{"id":"f002","query":"What is the recent news involving Masayoshi Son and Arm Holdings?","intent":"entity_investigation","must_include_terms":["Son","Arm"],"nice_to_have_terms":["SoftBank","artificial intelligence"],"notes":"Composite entity. 'AI' replaced: it matched 'said' under substring scoring"}
 {"id":"f003","query":"ByteDance","intent":"entity_investigation","must_include_terms":["ByteDance"],"nice_to_have_terms":["TikTok","regulation"]}
 {"id":"f004","query":"Deutche Bank restructuring","intent":"entity_investigation","must_include_terms":["Deutsche Bank"],"nice_to_have_terms":["wealth","cost"],"notes":"Misspelling stress test"}
 {"id":"f005","query":"Abu Dhabi Investment Authority","intent":"entity_investigation","must_include_terms":["Abu Dhabi"],"nice_to_have_terms":["ADIA","investment"]}
+{"id":"f017","query":"Nvidia chip export restrictions","intent":"entity_investigation","must_include_terms":["Nvidia"],"nice_to_have_terms":["export","China","chip"]}
+{"id":"f018","query":"Tesla robotaxi rollout","intent":"entity_investigation","must_include_terms":["Tesla"],"nice_to_have_terms":["robotaxi","autonomous","Musk"]}
+{"id":"f019","query":"OpenAI funding and governance","intent":"entity_investigation","must_include_terms":["OpenAI"],"nice_to_have_terms":["funding","Microsoft","valuation"]}
+{"id":"f020","query":"Saudi Aramco capital spending and dividend","intent":"entity_investigation","must_include_terms":["Aramco"],"nice_to_have_terms":["dividend","crude","output"]}
+{"id":"f021","query":"HSBC restructuring in Asia","intent":"entity_investigation","must_include_terms":["HSBC"],"nice_to_have_terms":["Asia","restructuring","wealth"]}
+{"id":"f022","query":"Volkswagen China strategy","intent":"entity_investigation","must_include_terms":["Volkswagen"],"nice_to_have_terms":["China","electric","joint venture"]}
+{"id":"f023","query":"Berkshire Hathway succession plan","intent":"entity_investigation","must_include_terms":["Berkshire"],"nice_to_have_terms":["succession","Buffett","Greg Abel"],"notes":"Misspelling stress test. 'Abel' alone matched 'label' under substring scoring"}
+{"id":"f024","query":"Temasek investment strategy","intent":"entity_investigation","must_include_terms":["Temasek"],"nice_to_have_terms":["Singapore","portfolio","investment"]}
+{"id":"f025","query":"Barclays investment banking overhaul","intent":"entity_investigation","must_include_terms":["Barclays"],"nice_to_have_terms":["investment bank","cost","profit"]}
+{"id":"f026","query":"Rheinmetall defence order book","intent":"entity_investigation","must_include_terms":["Rheinmetall"],"nice_to_have_terms":["defence|defense","backlog","Germany"],"notes":"Alternation covers British and American spelling"}
 {"id":"f006","query":"private credit market trends","intent":"topical_exploration","must_include_terms":["private credit"],"nice_to_have_terms":["lending","fundraising","default"]}
 {"id":"f007","query":"EU AI Act compliance","intent":"topical_exploration","must_include_terms":["AI Act"],"nice_to_have_terms":["compliance","high-risk","Europe"]}
-{"id":"f008","query":"electric vehicles and battery recycling","intent":"topical_exploration","must_include_terms":["battery"],"nice_to_have_terms":["recycling","EV","minerals"]}
-{"id":"f009","query":"Jerome Powell","intent":"executive_profiling","must_include_terms":["Powell"],"nice_to_have_terms":["Federal Reserve","rates","inflation"]}
+{"id":"f008","query":"electric vehicles and battery recycling","intent":"topical_exploration","must_include_terms":["battery"],"nice_to_have_terms":["recycling","electric vehicle","minerals"],"notes":"'EV' replaced: it matched 'seven' under substring scoring"}
+{"id":"f027","query":"data centre power demand from AI computing","intent":"topical_exploration","must_include_terms":["data centre|data center"],"nice_to_have_terms":["power","electricity","grid"]}
+{"id":"f028","query":"semiconductor supply chain resilience","intent":"topical_exploration","must_include_terms":["semiconductor"],"nice_to_have_terms":["supply chain","foundry","capacity"]}
+{"id":"f029","query":"sovereign debt distress in emerging markets","intent":"topical_exploration","must_include_terms":["sovereign debt"],"nice_to_have_terms":["default","restructuring","IMF"]}
+{"id":"f030","query":"stablecoin regulation","intent":"topical_exploration","must_include_terms":["stablecoin"],"nice_to_have_terms":["regulation","reserves","payment"]}
+{"id":"f009","query":"Jerome Powell","intent":"executive_profiling","must_include_terms":["Powell"],"nice_to_have_terms":["Federal Reserve","interest rate","inflation"],"notes":"'rates' replaced: it matched 'corporate' under substring scoring"}
 {"id":"f010","query":"Jamie Dimon on the future of the economy","intent":"executive_profiling","must_include_terms":["Dimon"],"nice_to_have_terms":["JPMorgan","economy","fiscal"]}
-{"id":"f011","query":"Andy Jassy AWS growth strategy","intent":"executive_profiling","must_include_terms":["Jassy","AWS"],"nice_to_have_terms":["Amazon","AI","cloud"]}
+{"id":"f011","query":"Andy Jassy AWS growth strategy","intent":"executive_profiling","must_include_terms":["Jassy","AWS"],"nice_to_have_terms":["Amazon","artificial intelligence","cloud"],"notes":"'AWS' matched 'laws' under substring scoring; whole-word matching fixes it"}
 {"id":"f012","query":"Larry Fink's annual letter to CEOs","intent":"executive_profiling","must_include_terms":["Fink"],"nice_to_have_terms":["BlackRock","letter","retirement"]}
 {"id":"f013","query":"Christine Lagarde","intent":"executive_profiling","must_include_terms":["Lagarde"],"nice_to_have_terms":["ECB","inflation"]}
-{"id":"f014","query":"Brazil and deforestation rates 2025","intent":"geographic_assessment","must_include_terms":["Brazil","deforestation"],"nice_to_have_terms":["Amazon","2025"]}
-{"id":"f015","query":"Nigeria business climate","intent":"geographic_assessment","must_include_terms":["Nigeria"],"nice_to_have_terms":["inflation","FX","investment"]}
+{"id":"f014","query":"Brazil deforestation trends","intent":"geographic_assessment","must_include_terms":["Brazil","deforestation"],"nice_to_have_terms":["Amazon","enforcement","cattle"],"notes":"Year dropped from the query: '2025' as an aspect measured the corpus window, not retrieval"}
+{"id":"f015","query":"Nigeria business climate","intent":"geographic_assessment","must_include_terms":["Nigeria"],"nice_to_have_terms":["inflation","naira","investment"],"notes":"'FX' replaced with the local currency, which is what the copy actually uses"}
+{"id":"f031","query":"Vietnam manufacturing investment climate","intent":"geographic_assessment","must_include_terms":["Vietnam"],"nice_to_have_terms":["manufacturing","investment","tariff"]}
+{"id":"f032","query":"Argentina economic reforms","intent":"geographic_assessment","must_include_terms":["Argentina"],"nice_to_have_terms":["peso","inflation","reform"]}
+{"id":"f033","query":"European banking sector consolidation","intent":"industry_scan","must_include_terms":["bank"],"nice_to_have_terms":["merger","consolidation","Europe"]}
+{"id":"f034","query":"commercial real estate lending outlook","intent":"industry_scan","must_include_terms":["commercial real estate"],"nice_to_have_terms":["lending","vacancy","refinancing"]}
+{"id":"f035","query":"airline industry capacity and fares","intent":"industry_scan","must_include_terms":["airline"],"nice_to_have_terms":["capacity","fares","demand"]}
+{"id":"f036","query":"pharmaceutical patent cliff","intent":"industry_scan","must_include_terms":["patent"],"nice_to_have_terms":["drug","generic","expiry"]}
+{"id":"f037","query":"latest OPEC+ production decision","intent":"event_tracking","must_include_terms":["OPEC"],"nice_to_have_terms":["production","output","quota"]}
+{"id":"f038","query":"most recent Federal Reserve rate decision","intent":"event_tracking","must_include_terms":["Federal Reserve"],"nice_to_have_terms":["interest rate","inflation","FOMC"]}
+{"id":"f039","query":"Nvidia latest quarterly earnings","intent":"event_tracking","must_include_terms":["Nvidia"],"nice_to_have_terms":["revenue","earnings","guidance"]}
+{"id":"f040","query":"recent tariff announcements on imports","intent":"event_tracking","must_include_terms":["tariff"],"nice_to_have_terms":["imports","trade","duty"]}
+{"id":"f041","query":"BlackRock annual letter to investors","intent":"known_item","must_include_terms":["BlackRock"],"nice_to_have_terms":["letter","Fink","investor"]}
+{"id":"f042","query":"IMF World Economic Outlook latest projections","intent":"known_item","must_include_terms":["IMF"],"nice_to_have_terms":["outlook","growth","projection"]}
+{"id":"f043","query":"EU AI Act code of practice for general purpose AI","intent":"known_item","must_include_terms":["code of practice"],"nice_to_have_terms":["AI Act","general purpose","Commission"]}
+{"id":"f044","query":"Berkshire Hathaway annual shareholder letter","intent":"known_item","must_include_terms":["Berkshire"],"nice_to_have_terms":["shareholder","letter","Buffett"]}
 {"id":"f016","query":"What are key risks in private credit documentation and refinancing?","intent":"risk_compliance","must_include_terms":["private credit"],"nice_to_have_terms":["covenant","refinancing","default"]}
+{"id":"f045","query":"anti-money laundering enforcement actions against banks","intent":"risk_compliance","must_include_terms":["money laundering"],"nice_to_have_terms":["enforcement","penalty","compliance"]}
+{"id":"f046","query":"sanctions compliance risk for exporters","intent":"risk_compliance","must_include_terms":["sanctions"],"nice_to_have_terms":["compliance","export","penalty"]}
+{"id":"f047","query":"How does Anthropic compare with OpenAI on enterprise adoption?","intent":"competitive_intel","must_include_terms":["Anthropic","OpenAI"],"nice_to_have_terms":["enterprise","model","market share"]}
+{"id":"f048","query":"cloud market share among AWS Azure and Google Cloud","intent":"competitive_intel","must_include_terms":["AWS","Azure"],"nice_to_have_terms":["market share","cloud","growth"]}
+{"id":"f049","query":"competition between Airbus and Boeing on aircraft orders","intent":"competitive_intel","must_include_terms":["Airbus","Boeing"],"nice_to_have_terms":["backlog","delivery","aircraft"]}
+{"id":"f050","query":"public reaction to the Tesla brand","intent":"brand_perception","must_include_terms":["Tesla"],"nice_to_have_terms":["brand","boycott","reputation"]}
+{"id":"f051","query":"consumer sentiment toward Shein and fast fashion","intent":"brand_perception","must_include_terms":["Shein"],"nice_to_have_terms":["consumer","sustainability","criticism"]}
+{"id":"f052","query":"Boeing reputation after safety incidents","intent":"brand_perception","must_include_terms":["Boeing"],"nice_to_have_terms":["safety","reputation","regulator"]}

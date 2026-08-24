@@ -108,25 +108,55 @@ compares packs at equal cost, and `evidence_tokens@5` reports the cost itself.
 
 ### Measured results
 
-16 gold queries across all five Factiva intents, live API, `top_k=8`. Baseline is a
+**52 gold queries covering all ten Factiva intents**, live API, `top_k=10`. Baseline is a
 single Factiva call in API order; quality is the full stack.
 
 | Metric | Baseline | Quality + contextual | Delta |
 |--------|----------|----------------------|-------|
 | `term_hit@k` | 1.000 | 1.000 | +0.000 |
-| `term_hit_lead@3` | 1.000 | 1.000 | +0.000 |
-| `aspect_coverage@5` | 0.552 | 0.635 | **+0.083** |
-| `aspect_coverage@1200tok` | 0.688 | 0.750 | **+0.062** |
-| `entity_precision@5` | 0.775 | 0.925 | **+0.150** |
-| `noise_rate@5` (lower better) | 0.062 | 0.013 | **−0.050** |
-| `salience@5` | 0.899 | 0.926 | +0.027 |
-| `evidence_tokens@5` (lower better) | 2361 | 1127 | **−1234** |
+| `term_hit_lead@3` | 0.971 | 0.962 | −0.009 |
+| `aspect_coverage@5` | 0.510 | 0.615 | **+0.106** |
+| `aspect_coverage@1200tok` | 0.660 | 0.683 | +0.023 |
+| `entity_precision@5` | 0.831 | 0.915 | **+0.084** |
+| `noise_rate@5` (lower better) | 0.043 | 0.008 | **−0.035** |
+| `salience@5` | 0.894 | 0.939 | +0.045 |
+| `evidence_tokens@5` (lower better) | 2057 | 1243 | **−814** |
 
-More coverage from **half the text**: coverage per 1k tokens of evidence goes from 0.23 to
-0.56. Median latency is ~4.3 s per query, of which contextualization is 37 ms.
+More coverage from **40% less text**: coverage per 1k tokens of evidence goes from 0.25 to
+0.49, and noise falls five-fold. `term_hit_lead@3` is the one metric where the baseline is
+marginally ahead, by 0.009 — under half a query out of 52, and worth watching rather than
+explaining away.
 
-Reproduce with `taza-rag eval-retrieve --top-k 8 --compare`. Numbers shift slightly run
-to run because the underlying Factiva corpus is live.
+These figures replace an earlier 16-query set and are not comparable to it, for two reasons
+beyond sample size. Term matching was fixed (see below), which removed free hits; and the
+new set deliberately includes harder intents — `industry_scan`, `event_tracking`,
+`known_item`, `competitive_intel` and `brand_perception` previously had no rows at all.
+`aspect_coverage@5` at 0.615 against 0.635 before is a harder set, not a regression.
+
+Reproduce with `taza-rag eval-retrieve --top-k 10 --compare`. Numbers shift slightly run to
+run because the underlying Factiva corpus is live.
+
+#### The gold set, and why term matching was wrong
+
+`must_include_terms` were compared as plain case-insensitive substrings, so several terms
+scored for free regardless of what was retrieved: **"AI" is inside "said"**, "EV" inside
+"seven", "AWS" inside "laws", "oil" inside "spoil", "rate" inside "corporate". Matching is
+now whole-word, and a term may carry interchangeable spellings as `"defence|defense"` so a
+British source does not halve a score for a term the pack genuinely covers.
+
+The set is stratified by the Factiva intent mix with a floor of three rows per intent,
+because a stratum of one cannot support a per-intent number while still moving the mean.
+`tests/test_gold_quality.py` enforces the floor, unique ids, and that no term is a bare
+degenerate word, so the instrument cannot quietly rot.
+
+Labels were authored from the query alone, then checked for *achievability* with
+`scripts/validate_gold.py`, which reports any required term absent from the whole retrieved
+pool. That direction is deliberate: it is used only to relax a label that cannot be
+satisfied, never to add a term because it happens to appear in the top-5, which would tune
+the gold set to the system under test. All 52 labels are satisfiable from the pool.
+
+Abstention gold grew to 10 rows, and the previously flagged `a005` (confidential ECB
+minutes) was dropped as arguable rather than left to distort a 5-row metric.
 
 #### Is contextual retrieval carrying its weight?
 
@@ -476,14 +506,15 @@ specifically so it survives those `except Exception` handlers and cannot be swal
 the network also cut the suite from 7.0s to 1.8s, which is the same fact from the other side:
 those tests had been going over the wire.
 
-93 offline tests cover entity extraction and splitting, multi-entity tiering,
+103 offline tests cover entity extraction and splitting, multi-entity tiering,
 document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
 position penalty), claim verification (citation inheritance and its paragraph boundary,
 figure grounding, short-claim detection), the repair loop (convergence, budget, and the
 guarantee that a bad rewrite is discarded), provider-error handling (rate-limit retry,
-quota as fatal, temperature fallback), and CLI rendering. None require network access or
-API credentials.
+quota as fatal, temperature fallback), CLI rendering, and the gold set itself (whole-word
+term matching, spelling alternation, intent stratification floor). None require network
+access or API credentials.
 
 That last one earns its place: rich reads `[c1]` as a style tag and silently deletes it, so
 `taza-rag answer` was printing correctly cited answers with every marker stripped — visibly
@@ -552,12 +583,14 @@ abstention recall (0.800).
 - **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
   on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
   no A1 figure here has been calibrated against a human scorer.
-- **n=16 with a live corpus is not a stable metric.** Repeat runs of one configuration moved
-  Accuracy by 0.19. Expanding gold matters more than further ranking work.
-- **Gold covers 5 of the 10 Factiva intents.** `industry_scan`, `event_tracking`,
-  `known_item`, `competitive_intel` and `brand_perception` have no rows yet.
-- **Abstention gold is 5 queries and one label is arguable** (`a005`, confidential ECB
-  minutes, is answerable from published reporting). Too small to be a stable metric.
+- **Retrieval gold is now 52 rows across all ten intents; answer-level A1 is still scored on
+  16.** The retrieval numbers above are reasonably stable; every A1 figure in this file is
+  not, and re-running A1 on the full 52 is the next measurement to do.
+- **The upstream API fails a few percent of calls.** Two of 52 queries hit
+  `All 3 query variants failed` during one validation pass and both succeeded on retry, and
+  a single 429 previously aborted an entire run five minutes in. Rate limits now get extra
+  retries that honour `Retry-After`, and a baseline failure is recorded per-row instead of
+  raising, but a live-corpus run is not perfectly repeatable.
 - **LLM-written passage context (`--llm-context`) is unmeasured.** It needs one chat call
   per passage (~1,100 per eval run), which is slow and rate-limited on a low-tier account;
   given that the cheaper embedding signal showed no gain, it was not prioritised.
@@ -565,8 +598,8 @@ abstention recall (0.800).
   see the caveats above on metric saturation and tier-ordered ranking.
 
 **Next candidates:**
-- Expand gold before further answer-side tuning: at n=16 the repair loop's effect is
-  unmeasurable either way, so the next change would be tuned against noise
+- Re-run answer-level A1 on the full 52-row set, so Accuracy stops moving 0.19 between runs
+- Investigate the one metric where baseline still leads (`term_hit_lead@3`, −0.009)
 - Human calibration of the six Completeness-limited queries against the A1 rubric
 - Cross-encoder / vendor reranker on fused candidates
 - Expand gold to the remaining five intents, and to a harder set with headroom

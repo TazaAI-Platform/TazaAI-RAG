@@ -11,7 +11,7 @@ from rich.table import Table
 
 from taza_rag.eval.retrieval import intent_counts, load_gold
 from taza_rag.factiva.pipeline import QualityRetriever
-from taza_rag.factiva.retrieve import FactivaRetrievalClient
+from taza_rag.factiva.retrieve import FactivaRetrievalClient, FactivaRetrieveError
 from taza_rag.factiva.strategy import default_days_range
 from taza_rag.models import RetrievedChunk
 from taza_rag.retrieve.features import LEAD_CHARS, build_query_plan, doc_kind, entity_signal
@@ -23,11 +23,31 @@ def _blob(hits: list[RetrievedChunk], k: int) -> str:
     return "\n".join(f"{h.chunk.title}\n{h.chunk.text}" for h in hits[:k]).lower()
 
 
+def term_matches(term: str, blob: str) -> bool:
+    """Whole-word match, with `|` marking interchangeable spellings.
+
+    Plain substring matching scored several gold terms for free: "AI" is inside "said",
+    "EV" inside "seven", "AWS" inside "laws", "oil" inside "spoil". Any metric built on
+    those terms was measuring English, not retrieval.
+
+    `"data center|data centre"` counts as one term hit by either spelling, so a British
+    or American source does not halve the score for a term the pack genuinely covers.
+    """
+    haystack = blob.lower()
+    for variant in term.lower().split("|"):
+        variant = variant.strip()
+        if not variant:
+            continue
+        if re.search(rf"(?<!\w){re.escape(variant)}(?!\w)", haystack):
+            return True
+    return False
+
+
 def term_hit_rate(hits: list[RetrievedChunk], terms: list[str], k: int = 10) -> float:
     if not terms:
         return 1.0
     blob = _blob(hits, k)
-    return sum(1 for term in terms if term.lower() in blob) / len(terms)
+    return sum(1 for term in terms if term_matches(term, blob)) / len(terms)
 
 
 def term_hit_lead(hits: list[RetrievedChunk], terms: list[str], k: int = 3) -> float:
@@ -42,7 +62,7 @@ def term_hit_lead(hits: list[RetrievedChunk], terms: list[str], k: int = 3) -> f
     blob = "\n".join(
         f"{h.chunk.title}\n{h.chunk.text[:LEAD_CHARS]}" for h in hits[:k]
     ).lower()
-    return sum(1 for term in terms if term.lower() in blob) / len(terms)
+    return sum(1 for term in terms if term_matches(term, blob)) / len(terms)
 
 
 def aspect_coverage(hits: list[RetrievedChunk], aspects: list[str], k: int = 5) -> float:
@@ -57,7 +77,7 @@ def aspect_coverage(hits: list[RetrievedChunk], aspects: list[str], k: int = 5) 
     blob = "\n".join(
         f"{h.chunk.title}\n{h.chunk.text[:LEAD_CHARS]}" for h in hits[:k]
     ).lower()
-    return sum(1 for a in aspects if a.lower() in blob) / len(aspects)
+    return sum(1 for a in aspects if term_matches(a, blob)) / len(aspects)
 
 
 def pack_tokens(hits: list[RetrievedChunk], k: int = 5) -> float:
@@ -90,7 +110,7 @@ def coverage_at_budget(
         if used >= budget_tokens:
             break
     blob = "\n".join(parts).lower()
-    return sum(1 for a in aspects if a.lower() in blob) / len(aspects)
+    return sum(1 for a in aspects if term_matches(a, blob)) / len(aspects)
 
 
 def salience_proxy(query: str, hits: list[RetrievedChunk], k: int = 5) -> float:
@@ -186,6 +206,7 @@ def run_factiva_retrieval_eval(
     rows: list[dict[str, Any]] = []
     agg: dict[str, list[float]] = defaultdict(list)
     base_agg: dict[str, list[float]] = defaultdict(list)
+    baseline_failures: list[dict[str, str]] = []
     by_intent: dict[str, list[float]] = defaultdict(list)
 
     for ex in gold:
@@ -246,20 +267,27 @@ def run_factiva_retrieval_eval(
         }
 
         if baseline_client is not None:
-            base_hits = baseline_client.retrieve(
-                ex.query, limit=top_k, days_range=default_days_range(ex.intent)
-            )
-            bm = _metrics(
-                ex.query,
-                ex.intent,
-                base_hits,
-                ex.must_include_terms,
-                ex.nice_to_have_terms,
-                top_k,
-            )
-            for key, value in bm.items():
-                base_agg[key].append(value)
-            row["baseline"] = bm
+            # One upstream failure must not discard the whole run. The comparison is a mean
+            # over whatever succeeded, and the skipped ids are reported so a thinned
+            # baseline is visible rather than quietly averaged away.
+            try:
+                base_hits = baseline_client.retrieve(
+                    ex.query, limit=top_k, days_range=default_days_range(ex.intent)
+                )
+            except FactivaRetrieveError as e:
+                baseline_failures.append({"id": ex.id, "error": str(e)[:200]})
+            else:
+                bm = _metrics(
+                    ex.query,
+                    ex.intent,
+                    base_hits,
+                    ex.must_include_terms,
+                    ex.nice_to_have_terms,
+                    top_k,
+                )
+                for key, value in bm.items():
+                    base_agg[key].append(value)
+                row["baseline"] = bm
 
         rows.append(row)
 
@@ -291,6 +319,9 @@ def run_factiva_retrieval_eval(
             "mean_salience@5": mean(base_agg["salience@5"]),
             "mean_entity_precision@5": mean(base_agg["entity_precision@5"]),
             "mean_noise_rate@5": mean(base_agg["noise_rate@5"]),
+            "n_scored": len(base_agg["term_hit@k"]),
+            "n_failed": len(baseline_failures),
+            "failures": baseline_failures,
         }
 
     report_path.parent.mkdir(parents=True, exist_ok=True)

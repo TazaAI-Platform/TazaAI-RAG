@@ -104,6 +104,9 @@ def item_to_chunk(item: dict[str, Any], rank: int) -> RetrievedChunk:
 
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
+# Extra attempts reserved for 429 only. A quota clears with time, so giving up after the
+# same two tries used for a 5xx throws away a run that would have succeeded.
+RATE_LIMIT_EXTRA_RETRIES = 3
 
 
 class FactivaRetrievalClient:
@@ -163,8 +166,23 @@ class FactivaRetrievalClient:
             "Content-Type": "application/json",
         }
 
-        def _backoff(attempt: int) -> None:
-            time.sleep(min(4.0, 0.6 * (2 ** (attempt - 1))) + random.uniform(0, 0.3))
+        def _backoff(attempt: int, resp: httpx.Response | None = None) -> None:
+            """Wait before retrying, honouring the server's own hint when it gives one.
+
+            A rate limit is a quota over a time window, so the 4s ceiling that suits a
+            transient 5xx cannot clear it — a single 429 was enough to abort a 52-query
+            evaluation five minutes in.
+            """
+            rate_limited = resp is not None and resp.status_code == 429
+            hint = resp.headers.get("retry-after") if resp is not None else None
+            if hint:
+                try:
+                    time.sleep(min(45.0, float(hint)) + random.uniform(0, 0.3))
+                    return
+                except ValueError:
+                    pass
+            ceiling = 30.0 if rate_limited else 4.0
+            time.sleep(min(ceiling, 0.75 * (2**attempt)) + random.uniform(0, 0.3))
 
         with httpx.Client(timeout=90.0) as client:
 
@@ -189,10 +207,16 @@ class FactivaRetrievalClient:
                 resp = _post()
 
             # The semantic service returns sporadic 5xx/429; retry with jittered backoff.
+            # Rate limits get more attempts than 5xx because waiting genuinely resolves them.
             for attempt in range(1, self.max_retries + 1):
                 if resp.status_code not in RETRY_STATUS:
                     break
-                _backoff(attempt)
+                _backoff(attempt, resp)
+                resp = _post()
+            for attempt in range(self.max_retries, self.max_retries + RATE_LIMIT_EXTRA_RETRIES):
+                if resp.status_code != 429:
+                    break
+                _backoff(attempt, resp)
                 resp = _post()
 
             if resp.status_code >= 400:
