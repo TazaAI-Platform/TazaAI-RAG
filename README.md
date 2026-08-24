@@ -18,6 +18,7 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 | HTTP | `httpx` |
 | Generation | OpenAI `gpt-4o-mini` (not required for core retrieve path) |
 | A1 judge | `gpt-5` by default — deliberately not the generator, which inflated its own scores |
+| Grounding verification | Deterministic figure + citation checks, one LLM entailment call, one repair pass |
 
 ## Architecture
 
@@ -196,13 +197,55 @@ taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
 
 16 gold queries, `top_k=10`, generator `gpt-4o-mini`, judge `gpt-5`:
 
-| A1 criterion | Score | Note |
-|--------------|-------|------|
-| **Accuracy** (hard gate, all 4 checks) | **0.625** | citation integrity is the weak gate at 0.625 |
-| Relevance (1–3) | 2.44 | |
-| Completeness (1–3) | 2.00 | judge-independent; see below |
-| Clarity (1–3) | 2.94 | |
-| Overall pass rate | 0.562 | |
+| A1 criterion | Verification off | Verification on | Delta |
+|--------------|-----------------|-----------------|-------|
+| **Accuracy** (hard gate, all 4 checks) | 0.438 | **0.562** | +0.125 |
+| ├ factual correctness | 0.438 | 0.562 | +0.125 |
+| ├ citation integrity | 0.438 | 0.562 | +0.125 |
+| ├ no hallucinations | 0.688 | **0.875** | +0.188 |
+| └ contextual integrity | 0.750 | 0.812 | +0.062 |
+| Relevance (1–3) | 2.50 | 2.38 | −0.125 |
+| Completeness (1–3) | 1.94 | 1.69 | −0.250 |
+| Clarity (1–3) | 2.94 | 2.94 | +0.000 |
+
+### Grounding verification
+
+The generator is told to cite everything and invent nothing, and was then trusted. Under an
+independent judge that trust does not survive: citation integrity failed on more than half of
+answers. `taza_rag/factiva/verify.py` checks the answer instead.
+
+| Check | Method | Catches |
+|-------|--------|---------|
+| Citation presence | deterministic | a factual sentence with no `[cN]` marker |
+| Label validity | deterministic | `[c9]` when only 8 sources exist |
+| Figure grounding | deterministic | a number appearing in no source, or cited to the wrong one |
+| Claim support | one batched LLM call | attribution, certainty or magnitude the excerpt does not carry |
+
+The figure and citation checks are deterministic, so they cost nothing and cannot themselves
+hallucinate. Only paraphrase-level support needs a model. Anything flagged goes to a single
+corrective pass, and the rewrite is then re-checked deterministically, since a rewrite can
+introduce its own bad figures. Both reports are kept on the answer, so a residual problem is
+visible rather than silently accepted.
+
+Figure grounding distinguishes three cases, because they are different defects: a number in
+no source is invention, a real number attributed to the wrong chunk is miscitation, and a bare
+year is only reported — "this year" is routinely paraphrased and should not trigger a rewrite.
+
+**The cost is Completeness, and that is the interesting part.** Stripping unsupported claims
+makes answers thinner: Completeness drops 0.25 and Relevance 0.125. Some of the earlier
+Completeness score was being earned by content the sources did not support. That is the same
+tension seen from the other side above — this judge rewards material that the Accuracy gate
+should reject, and verification resolves it in favour of Accuracy.
+
+Every Accuracy gate improves and `hallucination` falls out of the top failure tags. Treat the
+size, not the direction, with caution: n=16 gives ±0.19 run-to-run, so +0.125 on any single
+gate is within noise. Four gates moving up together is the part worth believing.
+
+```bash
+taza-rag answer "Abu Dhabi Investment Authority"    # verification on by default
+taza-rag answer "..." --no-verify                   # ablate it
+taza-rag eval-a1 --no-verify --judge-model gpt-5    # measure the difference
+```
 
 #### Why an earlier version of this file claimed Accuracy 1.000
 
@@ -220,6 +263,9 @@ It was wrong, for three separate reasons worth recording:
 3. **n=16 is small and the corpus is live.** Three runs of the same configuration produced
    Accuracy 1.000, 0.875 and 0.812. One query is worth 6.25 points, so a single perfect run
    is consistent with a true pass rate near 0.80.
+4. **Re-judging dropped the citations.** The re-judge path rebuilt answers without their
+   citation records, so the judge failed citation integrity on answers that were properly
+   cited. `rejudge-a1` now refuses a report that stores only citation doc ids.
 
 The residual failures are real, not judge pedantry. Spot-checking flagged claims against the
 stored evidence by string search confirms them: one answer asserted "record profits" and
@@ -385,6 +431,7 @@ position penalty). None require network access or API credentials.
 ```text
 taza_rag/
   factiva/          # OAuth, Retrieval API client, intent strategy, quality pipeline
+  factiva/verify.py # claim-level grounding checks + repair pass
   retrieve/         # query features, tiering / rerank / diversity (Factiva + local)
   index/            # local dense + BM25 store
   ingest/           # structure-aware chunking + contextual prefixes
@@ -410,9 +457,12 @@ answer-level A1 scoring with an independent judge, re-judgeable artifacts, and m
 abstention recall (0.800).
 
 **Known gaps, stated plainly:**
-- **Citation integrity is the open defect (0.625).** Roughly a third of answers carry a claim
-  that is uncited or not supported by the retrieved text. This is a generation-side problem —
-  retrieval supplies the evidence, the answer overstates it — and it is the next thing to fix.
+- **Citation integrity is improved but still the weak gate (0.562).** Verification lifted every
+  Accuracy gate, but roughly four in ten answers still carry a claim the sources do not
+  support. The residual failures are mostly sentences the single repair pass did not fix;
+  iterating repair until the deterministic checks are clean is the obvious next step.
+- **Verification trades Completeness for Accuracy** (−0.25). Defensible for a Dow Jones
+  product where Accuracy is the automatic-fail gate, but it is a real cost, not a free win.
 - **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
   on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
   no A1 figure here has been calibrated against a human scorer.
@@ -429,8 +479,7 @@ abstention recall (0.800).
   see the caveats above on metric saturation and tier-ordered ranking.
 
 **Next candidates:**
-- Fix citation integrity: require a citation marker per sentence and verify each claim's
-  support before returning, rather than trusting the generator to self-police
+- Loop the repair pass until the deterministic checks are clean, rather than one attempt
 - Human calibration of the six Completeness-limited queries against the A1 rubric
 - Cross-encoder / vendor reranker on fused candidates
 - Expand gold to the remaining five intents, and to a harder set with headroom

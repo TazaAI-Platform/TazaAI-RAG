@@ -215,6 +215,9 @@ def answer_cmd(
     days_range: Optional[str] = typer.Option(None),
     raw: bool = typer.Option(False, "--raw", help="Baseline: single Factiva call, no quality stack"),
     semantic: bool = typer.Option(False, "--semantic", help="Add embedding similarity"),
+    verify: bool = typer.Option(
+        True, "--verify/--no-verify", help="Ground-check claims and repair before returning"
+    ),
 ) -> None:
     """Optional: retrieve + generate answer (needs OPENAI_API_KEY). Quality path is `retrieve`."""
     if not settings.openai_api_key:
@@ -225,12 +228,15 @@ def answer_cmd(
         raise typer.Exit(code=2)
     try:
         result = answer_with_factiva(
-            q, top_k=top_k, days_range=days_range, raw=raw, semantic=semantic
+            q, top_k=top_k, days_range=days_range, raw=raw, semantic=semantic, verify=verify
         )
     except LLMError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=3) from e
-    console.print(f"[bold]config[/bold]={result.config_name}  abstained={result.abstained}\n")
+    console.print(f"[bold]config[/bold]={result.config_name}  abstained={result.abstained}")
+    if result.verification:
+        console.print(f"[dim]verification: {result.verification}[/dim]")
+    console.print()
     console.print(result.answer)
     console.print("\nCitations:")
     for c in result.citations:
@@ -250,6 +256,9 @@ def eval_a1_cmd(
     judge_model: Optional[str] = typer.Option(
         None, "--judge-model", help="Score with a different model than the generator"
     ),
+    verify: bool = typer.Option(
+        True, "--verify/--no-verify", help="Ground-check claims and repair before scoring"
+    ),
 ) -> None:
     """Answer-level A1 eval: Accuracy gate + Relevance / Completeness / Clarity."""
     if not settings.openai_api_key:
@@ -259,7 +268,13 @@ def eval_a1_cmd(
         )
         raise typer.Exit(code=2)
     run_a1_eval(
-        gold, report, top_k=top_k, limit=limit, compare_baseline=compare, judge_model=judge_model
+        gold,
+        report,
+        top_k=top_k,
+        limit=limit,
+        compare_baseline=compare,
+        judge_model=judge_model,
+        verify=verify,
     )
     console.print(f"\nJSON → {report}")
     console.print(f"Worksheet → {report.with_suffix('.md')}")

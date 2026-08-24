@@ -6,7 +6,14 @@ from typing import Any
 from taza_rag.config import settings
 from taza_rag.factiva.pipeline import QualityRetriever
 from taza_rag.factiva.retrieve import FactivaRetrievalClient, hits_to_citations
-from taza_rag.llm import chat_json
+from taza_rag.factiva.verify import (
+    REPAIR_SYSTEM,
+    VerificationReport,
+    describe_problems,
+    split_claims,
+    verify_answer,
+)
+from taza_rag.llm import LLMError, chat_json
 from taza_rag.models import AnswerResult, RetrievedChunk, SearchIntent
 
 ANSWER_SYSTEM = """You are a Dow Jones / Factiva-aligned research assistant.
@@ -23,6 +30,12 @@ Answer ONLY using the provided source chunks. Rules:
 - If evidence is insufficient, set abstain=true and explain what is missing.
 Return JSON with keys: answer (string), abstain (boolean), used_citations (list of chunk labels like "c1").
 """
+
+
+def _evidence_by_label(selected: list[RetrievedChunk]) -> dict[str, str]:
+    return {
+        f"c{i}": f"{h.chunk.title}\n{h.chunk.text}" for i, h in enumerate(selected, start=1)
+    }
 
 
 def _pack_context(
@@ -73,6 +86,7 @@ def answer_with_factiva(
     raw: bool = False,
     contextual: bool = True,
     semantic: bool = False,
+    verify: bool = True,
     config_name: str | None = None,
 ) -> AnswerResult:
     """Retrieve from Factiva, then ground an answer with citations.
@@ -110,6 +124,27 @@ def answer_with_factiva(
     raw_json: dict[str, Any] = chat_json(ANSWER_SYSTEM, user, temperature=0.0)
     t2 = time.perf_counter()
 
+    answer_text = str(raw_json.get("answer") or "")
+    abstained = bool(raw_json.get("abstain"))
+    verification: dict[str, Any] | None = None
+
+    if verify and answer_text and not abstained:
+        evidence = _evidence_by_label(selected)
+        report = verify_answer(answer_text, evidence)
+        verification = {"initial": report.summary()}
+
+        if report.blocking:
+            repaired = _repair(query, context, answer_text, report)
+            if repaired is not None:
+                answer_text, abstained, raw_json = repaired
+                # Re-check deterministically: a rewrite can introduce its own bad figures.
+                recheck = verify_answer(answer_text, evidence, check_entailment=False)
+                verification["after_repair"] = recheck.summary()
+                verification["repaired"] = True
+        else:
+            verification["repaired"] = False
+    t3 = time.perf_counter()
+
     label_to_hit = {f"c{i}": h for i, h in enumerate(selected, start=1)}
     used = []
     for label in raw_json.get("used_citations") or []:
@@ -120,15 +155,39 @@ def answer_with_factiva(
     citations = hits_to_citations(used or selected[:3])
     return AnswerResult(
         query=query,
-        answer=str(raw_json.get("answer") or ""),
+        answer=answer_text,
         citations=citations,
         retrieved=selected,
         context=context,
-        abstained=bool(raw_json.get("abstain")),
+        abstained=abstained,
+        verification=verification,
         latency_ms={
             "retrieve": (t1 - t0) * 1000,
             "generate": (t2 - t1) * 1000,
-            "total": (t2 - t0) * 1000,
+            "verify": (t3 - t2) * 1000,
+            "total": (t3 - t0) * 1000,
         },
-        config_name=used_config,
+        config_name=used_config + ("+verified" if verify else ""),
     )
+
+
+def _repair(
+    query: str, context: str, answer: str, report: VerificationReport
+) -> tuple[str, bool, dict[str, Any]] | None:
+    """One corrective pass. Returns None if the model could not be reached."""
+    problems = describe_problems(report, split_claims(answer))
+    if not problems:
+        return None
+    user = (
+        f"Question: {query}\n\nSources:\n{context}\n\n"
+        f"Answer that failed verification:\n{answer}\n\n"
+        f"Problems found:\n{problems}"
+    )
+    try:
+        fixed: dict[str, Any] = chat_json(REPAIR_SYSTEM, user, temperature=0.0)
+    except LLMError:
+        return None
+    text = str(fixed.get("answer") or "").strip()
+    if not text:
+        return None
+    return text, bool(fixed.get("abstain")), fixed

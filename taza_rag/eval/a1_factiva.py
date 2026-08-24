@@ -21,7 +21,7 @@ from taza_rag.eval.dj_a1 import judge_a1, judge_model_name
 from taza_rag.eval.retrieval import load_gold
 from taza_rag.factiva.answer import answer_with_factiva
 from taza_rag.llm import LLMError
-from taza_rag.models import A1Judgment, AnswerResult, GoldExample
+from taza_rag.models import A1Judgment, AnswerResult, Citation, GoldExample
 
 console = Console()
 
@@ -49,9 +49,16 @@ def _mean(xs: list[float]) -> float:
 
 
 def _score_one(
-    ex: GoldExample, *, raw: bool, top_k: int, judge_model: str | None = None
+    ex: GoldExample,
+    *,
+    raw: bool,
+    top_k: int,
+    judge_model: str | None = None,
+    verify: bool = True,
 ) -> tuple[AnswerResult, A1Judgment, str]:
-    result = answer_with_factiva(ex.query, top_k=top_k, intent=ex.intent, raw=raw)
+    result = answer_with_factiva(
+        ex.query, top_k=top_k, intent=ex.intent, raw=raw, verify=verify
+    )
     evidence = _excerpts(result)
     judgment = judge_a1(ex.id, result, evidence, model=judge_model)
     return result, judgment, evidence
@@ -128,6 +135,7 @@ def run_a1_eval(
     limit: int | None = None,
     compare_baseline: bool = False,
     judge_model: str | None = None,
+    verify: bool = True,
 ) -> dict[str, Any]:
     gold = load_gold(gold_path)
     if limit:
@@ -140,7 +148,7 @@ def run_a1_eval(
     for ex in gold:
         try:
             result, judgment, evidence = _score_one(
-                ex, raw=False, top_k=top_k, judge_model=judge_model
+                ex, raw=False, top_k=top_k, judge_model=judge_model, verify=verify
             )
         except LLMError as e:
             # A billing or provider failure is not an evaluation result; record and move on.
@@ -159,6 +167,10 @@ def run_a1_eval(
             "a1": judgment.model_dump(),
             "answer": result.answer,
             "citations": [c.doc_id for c in result.citations],
+            # Full citation records, not just doc ids: re-judging with these dropped makes
+            # the judge fail citation integrity for an answer that was properly cited.
+            "citations_full": [c.model_dump() for c in result.citations],
+            "verification": result.verification,
             "latency_ms": result.latency_ms,
             # Kept so a different judge can score this exact answer later; re-generating
             # would change the answer and confound a judge comparison.
@@ -169,7 +181,7 @@ def run_a1_eval(
         if compare_baseline:
             try:
                 b_result, b_judgment, _ = _score_one(
-                    ex, raw=True, top_k=top_k, judge_model=judge_model
+                    ex, raw=True, top_k=top_k, judge_model=judge_model, verify=verify
                 )
                 base_rows.append(
                     {
@@ -224,6 +236,16 @@ def rejudge_report(
             f"{source_report} has no stored evidence for {missing_evidence[:3]}; "
             "re-run `eval-a1` to record it before re-judging."
         )
+    # Without the original citations the judge scores a differently-shaped answer, and
+    # citation integrity fails for reasons the system never caused.
+    missing_citations = [
+        r["id"] for r in old_rows if r.get("citations") and not r.get("citations_full")
+    ]
+    if missing_citations:
+        raise ValueError(
+            f"{source_report} stores only citation doc ids for {missing_citations[:3]}; "
+            "re-run `eval-a1` to record full citations before re-judging."
+        )
 
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -233,10 +255,11 @@ def rejudge_report(
         stub = AnswerResult(
             query=old["query"],
             answer=old["answer"],
-            citations=[],
+            citations=[Citation(**c) for c in old.get("citations_full") or []],
             retrieved=[],
             abstained=old["abstained"],
             config_name=old["config"],
+            context=old["evidence"],
         )
         try:
             judgment = judge_a1(old["id"], stub, old["evidence"], model=judge_model)

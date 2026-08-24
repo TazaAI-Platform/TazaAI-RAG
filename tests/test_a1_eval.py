@@ -151,6 +151,16 @@ def test_rejudge_scores_the_same_answers_and_reports_disagreement():
                         "overall_pass": True,
                         "answer": "Deutsche Bank cut costs [c1].",
                         "citations": ["d1"],
+                        "citations_full": [
+                            {
+                                "chunk_id": "d1::p000",
+                                "doc_id": "d1",
+                                "title": "Deutsche Bank cuts costs",
+                                "source": "wsj.com",
+                                "published_at": "2026-07-01",
+                                "excerpt": "cost cuts",
+                            }
+                        ],
                         "evidence": "[c1] Deutsche Bank cuts costs",
                         "a1": {
                             "accuracy": {g: True for g in GATES},
@@ -179,6 +189,8 @@ def test_rejudge_scores_the_same_answers_and_reports_disagreement():
     # The stored answer and its evidence are what get re-scored, not a fresh generation
     assert "Deutsche Bank cut costs" in captured["user"]
     assert "[c1] Deutsche Bank cuts costs" in captured["user"]
+    # The original citations travel with it, or citation integrity fails spuriously
+    assert '"doc_id": "d1"' in captured["user"] or "'doc_id': 'd1'" in captured["user"]
     assert summary["judge_model"] == "gpt-5"
     assert summary["previous_judge_model"] == "gpt-4o-mini"
     # A stricter judge flips the gate, and the disagreement is reported per query
@@ -203,6 +215,36 @@ def test_rejudge_refuses_a_report_without_stored_evidence():
         raise AssertionError("should have refused")
     except ValueError as e:
         assert "no stored evidence" in str(e)
+
+
+def test_rejudge_refuses_a_report_with_only_citation_ids():
+    """Re-judging with citations stripped fails citation integrity for no real reason."""
+    from taza_rag.eval.a1_factiva import rejudge_report
+
+    tmp = Path("/tmp/a1_rejudge_cites")
+    tmp.mkdir(parents=True, exist_ok=True)
+    source = tmp / "old.json"
+    source.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "id": "g1",
+                        "query": "q",
+                        "answer": "a [c1]",
+                        "evidence": "[c1] something",
+                        "citations": ["d1"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        rejudge_report(source, tmp / "out.json", judge_model="gpt-5")
+        raise AssertionError("should have refused")
+    except ValueError as e:
+        assert "only citation doc ids" in str(e)
 
 
 def test_accuracy_is_a_hard_gate():
