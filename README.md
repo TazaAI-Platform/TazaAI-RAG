@@ -16,7 +16,7 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 | Local index (ablation) | Dense embeddings + BM25 (`rank-bm25`, NumPy cosine) |
 | Config / CLI | `pydantic-settings`, Typer, Rich |
 | HTTP | `httpx` |
-| Optional generation / judge | OpenAI chat + embeddings (not required for core retrieve path) |
+| Generation / A1 judge | OpenAI `gpt-4o-mini` chat + `text-embedding-3-small` (not required for core retrieve path) |
 
 ## Architecture
 
@@ -159,6 +159,90 @@ taza-rag eval-retrieve --compare   # baseline vs quality stack, with deltas
 Writes `evals/reports/factiva_retrieve_latest.json` + `.md` worksheet. `--compare` also runs
 the single-call baseline per query and emits an ablation table.
 
+#### Does the embedding signal help? (measured: no)
+
+`--semantic` scores each contextualized passage by cosine similarity to the query using
+`text-embedding-3-small`, fused into the composite score. Measured over the same 16 queries:
+
+| Metric | Lexical | + semantic | Delta |
+|--------|---------|-----------|-------|
+| `term_hit_lead@3` | 1.000 | 1.000 | +0.000 |
+| `aspect_coverage@5` | 0.635 | 0.667 | +0.031 |
+| `aspect_coverage@1200tok` | 0.729 | 0.688 | −0.042 |
+| `entity_precision@5` | 0.925 | 0.925 | +0.000 |
+| `noise_rate@5` | 0.013 | 0.013 | +0.000 |
+| `salience@5` | 0.926 | 0.926 | +0.000 |
+
+No measurable gain, so it stays **off by default**. Two honest caveats: the lexical metrics
+are near saturation (`entity_precision` 0.93, `noise_rate` 0.01), so there is little headroom
+for a second signal to show up in them; and relevance tiering ranks before the composite
+score, so an embedding can only reorder *within* a tier by design. The finding is "no gain on
+this gold set", not "embeddings are useless" — a larger, harder gold set is the way to settle it.
+
+Cost is real: embedding ~75 passages per query adds ~2 s. On a low-tier OpenAI account
+(40,000 TPM) each call needs ~14K tokens, so throttling stretched this to ~40 s per query;
+`taza_rag/llm.py` retries on `rate_limit_exceeded`, honouring the provider's suggested wait.
+
+### A1 answer-level evaluation
+
+Retrieval metrics score the evidence pack. Accuracy and Clarity are properties of the
+**answer**, so they need generation — this is the only path where the full A1 rubric applies.
+
+```bash
+taza-rag eval-a1 --compare                                  # vs single-call baseline
+taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
+```
+
+16 gold queries, `top_k=10`, `gpt-4o-mini` as both generator and judge:
+
+| A1 criterion | Baseline | Quality + contextual | Delta |
+|--------------|----------|----------------------|-------|
+| **Accuracy** (hard gate, all 4 checks) | 0.938 | **1.000** | +0.062 |
+| Relevance (1–3) | 3.00 | 3.00 | +0.00 |
+| Completeness (1–3) | 2.81 | 2.62 | −0.19 |
+| Clarity (1–3) | 2.88 | **3.00** | +0.12 |
+| Overall pass rate | 0.938 | **1.000** | +0.062 |
+
+All four Accuracy gates — factual correctness, citation integrity, no hallucinations,
+contextual integrity — pass at 1.000, across all five intents. Accuracy is the rubric's
+automatic-fail gate, so this is the number that matters most.
+
+**The Completeness gap is a judge ceiling, not a retrieval defect.** Six queries score 2
+instead of 3, and three independent fixes each moved it by exactly zero:
+
+| Attempted fix | Completeness | Accuracy |
+|---------------|--------------|----------|
+| baseline of the six weak queries | 2.00 | 1.000 |
+| prompt demands figures + dissent | 2.00 | 1.000 |
+| whole articles instead of passages (max depth) | 2.00 | 1.000 |
+| `top_k=20`, 5000-token budget, 12 distinct sources (max breadth) | 2.00 | 1.000 |
+
+Reading what the judge asks for explains why: "broader market implications", "impact on
+climate change", "potential risks associated with AI investments". These are requests for
+interpretation that a licensed news corpus does not contain, and that the generation prompt
+deliberately refuses to supply. Chasing them means speculating, which is precisely what the
+Accuracy gate fails an answer for — and the baseline demonstrates the trade-off, scoring
+higher Completeness while failing Accuracy on one query. The judge is one `gpt-4o-mini`
+interpretation of "narrative completeness", not a Dow Jones evaluator; calibrating these six
+against a human scorer is the next step, and the `.md` worksheet exists for exactly that.
+
+Evidence for generation is budgeted by **tokens, not chunk count** — passages are about half
+the size of an article, so a fixed chunk count silently handed the generator half the
+evidence. Equalising the budget is what lifted Clarity to 3.00.
+
+#### Abstention
+
+Five deliberately unanswerable queries (`evals/gold/factiva_abstain_v1.jsonl`): a future
+reporting period, a private unpublished act, personal data, a fictional company, and
+confidential material.
+
+**Abstention recall: 0.800** — 4 of 5 refused, including the invented company (no entity
+hallucinated). The miss is `a005`, "confidential ECB minutes", which the system answered from
+published reporting on ECB deliberations; that is arguably correct behaviour and a gold label
+that is too strict, rather than a clean failure. Expected refusals are aggregated separately
+from answer quality, because scoring a correct refusal against the answer rubric counts the
+right behaviour as a failure.
+
 ### Local sample index (offline ablations)
 
 Sample corpus + gold with known `doc_id`s for Recall@k / Precision@k. Useful when iterating ranking logic without Factiva quota.
@@ -186,7 +270,7 @@ cp .env.example .env   # fill Factiva credentials
 | `FACTIVA_FEED_*` | optional | AI News Feed / Streams account |
 | `FACTIVA_TOKEN_URL` | default | `https://accounts.dowjones.com/oauth2/v1/token` |
 | `FACTIVA_API_BASE` | default | `https://api.dowjones.com` |
-| `OPENAI_API_KEY` | optional | `answer`, local embeddings, LLM judge only |
+| `OPENAI_API_KEY` | optional | `answer`, `eval-a1`, local embeddings, `--semantic`, `--llm-context` |
 
 `.env` is gitignored. Never commit credentials.
 
@@ -206,8 +290,11 @@ taza-rag eval-retrieve --gold evals/gold/factiva_live_v1.jsonl
 taza-rag eval-retrieve --limit 5              # smoke
 taza-rag eval-retrieve --limit 5 --compare    # vs single-call baseline
 
-# Optional generation (needs OPENAI_API_KEY)
+# Optional generation + A1 answer eval (needs OPENAI_API_KEY)
 taza-rag answer "EU AI Act compliance"
+taza-rag answer "EU AI Act compliance" --raw   # baseline retrieval, for comparison
+taza-rag eval-a1 --compare                     # Accuracy gate + R/C/Clarity vs baseline
+taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl   # refusal behaviour
 
 # Local hybrid index (needs embeddings provider)
 taza-rag ingest --corpus data/sample_corpus/articles.jsonl
@@ -256,9 +343,11 @@ position penalty). None require network access or API credentials.
 
 ## What “good” looks like
 
+- **A1 Accuracy passes at 1.000** — it is the rubric's automatic-fail gate
 - `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` beat the `--raw` baseline
 - Coverage per 1k tokens of evidence improves, not just coverage
 - Human Relevance/Completeness ≥ 2 on the generated worksheet
+- Unanswerable queries are refused rather than answered
 - Misspelled entities (`Deutche`) rank the same as correctly spelled ones
 - Digests and vendor profiles stay out of the top-5 for news intents
 
@@ -272,10 +361,11 @@ taza_rag/
   ingest/           # structure-aware chunking + contextual prefixes
   factiva/contextual.py  # passage splitting + situating context + optional embeddings
   generate/         # optional grounded answer
-  eval/             # Factiva retrieval eval, local metrics, A1 judge schema
+  eval/             # Factiva retrieval eval, A1 answer eval, local metrics, A1 judge
   cli.py
 evals/
   gold/factiva_live_v1.jsonl
+  gold/factiva_abstain_v1.jsonl  # deliberately unanswerable queries
   gold/v1.jsonl                 # local sample gold
 configs/
 data/sample_corpus/
@@ -286,22 +376,27 @@ tests/
 ## Trial status / next
 
 **Now:** Factiva retrieve quality loop, intent-aware ranking, contextual passage
-retrieval, and offline-capable metrics including cost-normalized coverage.
+retrieval, offline-capable retrieval metrics including cost-normalized coverage, and
+answer-level A1 scoring with a measured Accuracy gate (1.000) and abstention recall (0.800).
 
 **Known gaps, stated plainly:**
-- **A1 Accuracy and Clarity are unmeasured.** The judge exists (`taza_rag/eval/dj_a1.py`)
-  and covers all four dimensions, but it needs an OpenAI key and has only ever been wired
-  to the local path. Everything measured here is retrieval-side.
+- **The A1 judge is an LLM, not a human.** Accuracy 1.000 and Completeness 2.62 are one
+  `gpt-4o-mini` reading of the rubric. The Completeness ceiling in particular needs human
+  calibration on the six affected queries before it can be trusted or acted on.
 - **Gold covers 5 of the 10 Factiva intents.** `industry_scan`, `event_tracking`,
   `known_item`, `competitive_intel` and `brand_perception` have no rows yet.
-- **Abstention is implemented but unevaluated** — no gold query is deliberately
-  unanswerable, so the refusal path has no measured precision.
-- **Semantic scoring depends on the upstream API.** Local scoring is lexical by design
-  (no key, ~150 ms); `--semantic` adds embedding similarity over contextualized passages
-  when a key is present, but its contribution has not been measured.
+- **Abstention gold is 5 queries and one label is arguable** (`a005`, confidential ECB
+  minutes, is answerable from published reporting). Too small to be a stable metric.
+- **LLM-written passage context (`--llm-context`) is unmeasured.** It needs one chat call
+  per passage (~1,100 per eval run), which is slow and rate-limited on a low-tier account;
+  given that the cheaper embedding signal showed no gain, it was not prioritised.
+- **The embedding signal shows no measurable gain** on this gold set and is off by default;
+  see the caveats above on metric saturation and tier-ordered ranking.
 
 **Next candidates:**
+- Human calibration of the six Completeness-limited queries against the A1 rubric
 - Cross-encoder / vendor reranker on fused candidates
+- Expand gold to the remaining five intents, and to a harder set with headroom
 - News Feed / Streams → local PGVector index for owned corpus
 - Value-before-access / entitlement-aware source selection (marketplace layer)
 

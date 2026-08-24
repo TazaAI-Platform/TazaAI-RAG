@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     retrieve_sparse_k: int = 40
     retrieve_fuse_k: int = 50
     rerank_top_k: int = 10
-    answer_max_chunks: int = 8
+    answer_max_chunks: int = 16
+    # Evidence budget for generation. Both retrieval paths get the same token cost,
+    # so passage retrieval spends its saving on more sources rather than less evidence.
+    answer_context_tokens: int = 3000
 
     # Factiva RAG API
     factiva_rag_client_id: str = ""

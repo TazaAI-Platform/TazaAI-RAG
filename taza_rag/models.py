@@ -130,6 +130,9 @@ class A1Judgment(BaseModel):
     relevance: DimensionScore
     completeness: DimensionScore
     clarity: DimensionScore
+    # What a complete answer would have added. This is what turns a Completeness score
+    # into something retrieval can act on.
+    missing_aspects: list[str] = Field(default_factory=list)
     failure_tags: list[str] = Field(default_factory=list)
     notes: str = ""
 
@@ -153,5 +156,8 @@ class GoldExample(BaseModel):
     # For live Factiva evals when gold doc IDs are unknown:
     must_include_terms: list[str] = Field(default_factory=list)
     nice_to_have_terms: list[str] = Field(default_factory=list)
+    # Unanswerable by design: the system should refuse rather than improvise. Without
+    # these, the abstention path has no measured precision.
+    expect_abstention: bool = False
     notes: str = ""
     reference_answer: str | None = None

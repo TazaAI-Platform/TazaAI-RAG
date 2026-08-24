@@ -102,9 +102,20 @@ def test_later_passages_are_penalized_by_position():
 
 
 def test_semantic_scoring_is_skipped_without_a_key():
-    """The lexical stack must never depend on an API key being present."""
-    passages = to_passages([_article()])
-    assert semantic_scores("Deutsche Bank restructuring", passages) == []
+    """The lexical stack must never depend on an API key being present.
+
+    The key is cleared explicitly: relying on an unconfigured environment made this
+    pass for the wrong reason and put a live API call inside the offline suite.
+    """
+    from taza_rag.config import settings
+
+    original = settings.openai_api_key
+    settings.openai_api_key = ""
+    try:
+        passages = to_passages([_article()])
+        assert semantic_scores("Deutsche Bank restructuring", passages) == []
+    finally:
+        settings.openai_api_key = original
 
 
 def test_contextual_retrieval_finds_topic_outside_the_lead():

@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from taza_rag.config import settings
+from taza_rag.eval.a1_factiva import run_a1_eval
 from taza_rag.eval.factiva_retrieval import run_factiva_retrieval_eval
 from taza_rag.eval.run import run_eval
 from taza_rag.factiva.answer import answer_with_factiva
@@ -18,6 +19,7 @@ from taza_rag.generate.answer import answer_query
 from taza_rag.index.store import HybridIndex
 from taza_rag.ingest import build_chunks
 from taza_rag.ingest.corpus import load_corpus_jsonl
+from taza_rag.llm import LLMError
 from taza_rag.models import SearchIntent
 
 app = typer.Typer(
@@ -144,15 +146,21 @@ def _print_hit(h, show_scores: bool = True) -> None:
         tail += f" | passage {c.chunk_index + 1}/{passages}"
     console.print(f"  {c.source} | {c.published_at} | {c.doc_id}{tail}")
     if show_scores and h.scores:
-        console.print(
+        semantic = h.scores.get("semantic", 0.0)
+        line = (
             f"  [dim]entity={h.scores.get('entity', 0):.2f} "
             f"topic={h.scores.get('topic', 0):.2f} "
             f"bm25={h.scores.get('bm25', 0):.2f} "
             f"rrf={h.scores.get('rrf', 0):.2f} "
+        )
+        if semantic:
+            line += f"semantic={semantic:.2f} "
+        line += (
             f"auth={h.scores.get('authority', 1):.2f} "
             f"fresh={h.scores.get('freshness', 1):.2f} "
             f"penalty={h.scores.get('penalty', 0):.2f}[/dim]"
         )
+        console.print(line)
     console.print(f"  {c.text[:300].replace(chr(10), ' ')}…\n")
 
 
@@ -204,7 +212,9 @@ def factiva_auth(
 def answer_cmd(
     q: str = typer.Argument(...),
     top_k: int = typer.Option(8),
-    days_range: str = typer.Option("Last6Months"),
+    days_range: Optional[str] = typer.Option(None),
+    raw: bool = typer.Option(False, "--raw", help="Baseline: single Factiva call, no quality stack"),
+    semantic: bool = typer.Option(False, "--semantic", help="Add embedding similarity"),
 ) -> None:
     """Optional: retrieve + generate answer (needs OPENAI_API_KEY). Quality path is `retrieve`."""
     if not settings.openai_api_key:
@@ -213,12 +223,41 @@ def answer_cmd(
             "Use `taza-rag retrieve` for retrieval-only (recommended for quality work)."
         )
         raise typer.Exit(code=2)
-    result = answer_with_factiva(q, limit=top_k, days_range=days_range)
+    try:
+        result = answer_with_factiva(
+            q, top_k=top_k, days_range=days_range, raw=raw, semantic=semantic
+        )
+    except LLMError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=3) from e
+    console.print(f"[bold]config[/bold]={result.config_name}  abstained={result.abstained}\n")
     console.print(result.answer)
     console.print("\nCitations:")
     for c in result.citations:
         console.print(f"- [{c.doc_id}] {c.title} ({c.source}, {c.published_at})")
     console.print(f"\nLatency ms: {result.latency_ms}")
+
+
+@app.command("eval-a1")
+def eval_a1_cmd(
+    gold: Path = typer.Option(Path("evals/gold/factiva_live_v1.jsonl")),
+    report: Path = typer.Option(Path("evals/reports/a1_latest.json")),
+    top_k: int = typer.Option(8, min=1, max=20),
+    limit: Optional[int] = typer.Option(None, help="Only the first N gold queries"),
+    compare: bool = typer.Option(
+        False, "--compare/--no-compare", help="Also score the single-call baseline (2x LLM calls)"
+    ),
+) -> None:
+    """Answer-level A1 eval: Accuracy gate + Relevance / Completeness / Clarity."""
+    if not settings.openai_api_key:
+        console.print(
+            "[yellow]OPENAI_API_KEY not set.[/yellow] "
+            "A1 Accuracy and Clarity are answer-level and need a generated answer to score."
+        )
+        raise typer.Exit(code=2)
+    run_a1_eval(gold, report, top_k=top_k, limit=limit, compare_baseline=compare)
+    console.print(f"\nJSON → {report}")
+    console.print(f"Worksheet → {report.with_suffix('.md')}")
 
 
 # --- Local sample-index tools (ablations / offline) ---

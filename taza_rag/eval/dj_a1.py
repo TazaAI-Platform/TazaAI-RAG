@@ -19,6 +19,10 @@ Relevance (1-3): directness, saliency (market-moving/important), contextual dept
 Completeness (1-3): narrative completeness, source weighting on conflicts, intellectual honesty (dissent)
 Clarity (1-3): conciseness, structure, Dow Jones objective/professional/analytical tone
 
+For every score below 3, state plainly what is wrong. For completeness, also list the
+specific aspects a complete answer would have covered but this one did not — name them
+concretely (a subtopic, a counterparty, a figure, a dissenting view), not as generic advice.
+
 Return JSON:
 {
   "factual_correctness": bool,
@@ -26,8 +30,12 @@ Return JSON:
   "no_hallucinations": bool,
   "contextual_integrity": bool,
   "relevance": 1|2|3,
+  "relevance_notes": string,
   "completeness": 1|2|3,
+  "completeness_notes": string,
+  "missing_aspects": [string],
   "clarity": 1|2|3,
+  "clarity_notes": string,
   "failure_tags": [string],
   "notes": string
 }
@@ -54,9 +62,16 @@ def judge_a1(query_id: str, result: AnswerResult, source_excerpts: str) -> A1Jud
             no_hallucinations=bool(raw.get("no_hallucinations")),
             contextual_integrity=bool(raw.get("contextual_integrity")),
         ),
-        relevance=DimensionScore(score=int(raw.get("relevance", 1)), notes=""),
-        completeness=DimensionScore(score=int(raw.get("completeness", 1)), notes=""),
-        clarity=DimensionScore(score=int(raw.get("clarity", 1)), notes=""),
+        relevance=DimensionScore(
+            score=int(raw.get("relevance", 1)), notes=str(raw.get("relevance_notes") or "")
+        ),
+        completeness=DimensionScore(
+            score=int(raw.get("completeness", 1)), notes=str(raw.get("completeness_notes") or "")
+        ),
+        clarity=DimensionScore(
+            score=int(raw.get("clarity", 1)), notes=str(raw.get("clarity_notes") or "")
+        ),
+        missing_aspects=[str(a) for a in (raw.get("missing_aspects") or [])],
         failure_tags=list(raw.get("failure_tags") or []),
         notes=str(raw.get("notes") or ""),
     )

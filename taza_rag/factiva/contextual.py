@@ -18,6 +18,7 @@ from collections import Counter
 
 from taza_rag.config import settings
 from taza_rag.ingest.chunk import chunk_document, estimate_tokens
+from taza_rag.llm import LLMError
 from taza_rag.models import Chunk, Document, RetrievedChunk
 from taza_rag.retrieve.features import ROLE_WORDS, STOPWORDS, content_terms
 
@@ -111,6 +112,9 @@ def to_passages(
     queries.
     """
     out: list[RetrievedChunk] = []
+    # One provider failure means every later call fails too; degrade to the heuristic
+    # prefix rather than aborting a whole retrieval over an unpayable extra.
+    llm_ok = use_llm
     for hit in hits:
         doc = _as_document(hit)
         if not doc.body.strip():
@@ -122,9 +126,15 @@ def to_passages(
         entities = salient_entities(f"{doc.title}\n{doc.body}")
 
         for i, piece in enumerate(pieces):
-            if use_llm:
-                context = llm_context(doc.title, doc.source, doc.published_at, doc.body, piece.text)
-            else:
+            context = ""
+            if llm_ok:
+                try:
+                    context = llm_context(
+                        doc.title, doc.source, doc.published_at, doc.body, piece.text
+                    )
+                except LLMError:
+                    llm_ok = False
+            if not context:
                 context = heuristic_context(
                     doc.title, doc.source, doc.published_at, entities, i, len(pieces)
                 )
