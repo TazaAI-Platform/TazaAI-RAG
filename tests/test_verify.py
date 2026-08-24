@@ -99,6 +99,19 @@ def test_a_refusal_is_not_treated_as_an_uncited_claim():
     assert check_citations(claims, set(EVIDENCE)) == []
 
 
+def test_a_citation_missing_its_prefix_is_still_a_citation():
+    """Real output mixes forms: "[c2], [c5], [9]". A strict pattern misses it twice — the
+    sentence reads as uncited and the bare 9 survives to be scored as a figure."""
+    claims = split_claims("Results beat expectations despite the decline [c2], [c5], [9].")
+    assert claims[0].labels == ["c2", "c5", "c9"]
+    assert figures(claims[0].text) == [], "a citation number is not a claimed figure"
+
+
+def test_a_bare_label_pointing_nowhere_is_still_invalid():
+    report = verify_answer("Profit rose sharply [99].", EVIDENCE, check_entailment=False)
+    assert [p.kind for p in report.problems] == ["invalid_label"]
+
+
 def test_short_factual_sentences_are_still_checked():
     """A length threshold let the most dangerous case through: 'Revenue hit $9.9bn.'"""
     for text in (

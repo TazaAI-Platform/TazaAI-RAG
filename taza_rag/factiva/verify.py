@@ -19,6 +19,11 @@ from typing import Any
 from taza_rag.llm import LLMError, chat_json
 
 _LABEL = re.compile(r"\[(c\d+(?:\s*,\s*c\d+)*)\]", re.IGNORECASE)
+# Generators sometimes drop the prefix and emit "[9]" beside "[c2]". The intent is
+# unambiguous, but a strict pattern misses it twice over: the sentence looks uncited, and
+# the bare number survives label-stripping to be scored as a figure that needs grounding.
+_LOOSE_LABEL = re.compile(r"\[\s*c?\s*\d+(?:\s*,\s*c?\s*\d+)*\s*\]", re.IGNORECASE)
+_LOOSE_NUMBER = re.compile(r"c?\s*(\d+)", re.IGNORECASE)
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[\"“'(\[]?[A-Z0-9])")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # Bare years are routinely paraphrased ("this year"), so they are reported but never
@@ -46,8 +51,14 @@ Rules:
 - Where attribution was overstated, restate only what the source says.
 - Every remaining significant claim must carry a citation marker like [c1] that matches a
   real source label.
+- Change ONLY what was flagged. Keep every unflagged claim, figure and attribution exactly
+  as it was — this is a correction, not a rewrite, and quietly dropping sound material to
+  play safe is itself a defect.
+- Prefer correcting a claim to deleting it: if the sources support a weaker version, state
+  the weaker version rather than removing the point.
 - Keep the surviving analysis fluent and journalistic; do not leave stubs or fragments.
-- If almost nothing survives, set abstain=true and say what evidence is missing.
+- Set abstain=true ONLY if nothing verifiable remains at all. If any supported claim
+  survives, return it as the answer with abstain=false.
 Return JSON with keys: answer (string), abstain (boolean), used_citations (list like ["c1"]).
 """
 
@@ -105,17 +116,19 @@ class VerificationReport:
 
 
 def _labels_in(text: str) -> list[str]:
+    """Every citation the sentence attempts, including prefix-less forms like "[9]"."""
     out: list[str] = []
-    for group in _LABEL.findall(text):
-        for part in group.split(","):
-            label = part.strip().lower()
-            if label and label not in out:
+    for match in _LOOSE_LABEL.finditer(text):
+        for number in _LOOSE_NUMBER.findall(match.group(0)):
+            label = f"c{int(number)}"
+            if label not in out:
                 out.append(label)
     return out
 
 
 def strip_labels(text: str) -> str:
-    return _LABEL.sub(" ", text)
+    """Remove citation markers so they cannot be mistaken for prose or figures."""
+    return _LOOSE_LABEL.sub(" ", text)
 
 
 def split_claims(answer: str) -> list[Claim]:
