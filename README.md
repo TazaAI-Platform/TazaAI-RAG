@@ -4,6 +4,10 @@ Retrieval-first RAG prototype for the Taza engineering working period (**Option 
 
 Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones content. Answer generation is optional and secondary.
 
+> **Start with [`DECISION.md`](DECISION.md)** — what was built, what it measures, what I got
+> wrong and corrected, what I tried that failed, and what I would do next. This README is the
+> engineering detail behind it.
+
 ## Stack
 
 | Layer | Technology |
@@ -457,16 +461,21 @@ evidence. Equalising the budget is what lifted Clarity to 3.00.
 
 #### Abstention
 
-Five deliberately unanswerable queries (`evals/gold/factiva_abstain_v1.jsonl`): a future
-reporting period, a private unpublished act, personal data, a fictional company, and
-confidential material.
+Ten deliberately unanswerable queries (`evals/gold/factiva_abstain_v1.jsonl`): future
+reporting periods, private unpublished acts, personal data, a fictional company, undisclosed
+figures, sealed filings and individual board votes.
 
-**Abstention recall: 0.800** — 4 of 5 refused, including the invented company (no entity
-hallucinated). The miss is `a005`, "confidential ECB minutes", which the system answered from
-published reporting on ECB deliberations; that is arguably correct behaviour and a gold label
-that is too strict, rather than a clean failure. Expected refusals are aggregated separately
-from answer quality, because scoring a correct refusal against the answer rubric counts the
-right behaviour as a failure.
+**Abstention recall: 0.900** — 9 of 10 refused, including the invented company, so no entity
+was hallucinated into existence. Measured against **0.019 false refusal** of answerable
+queries on the 52-row set, which is the number that matters alongside it: a system that
+refuses freely would score well here and be useless.
+
+The earlier 0.800 was measured on a 5-row set that included `a005`, "confidential ECB
+minutes" — answerable from published reporting on ECB deliberations, so a gold label that was
+too strict rather than a clean failure. It was dropped rather than left to distort the metric.
+
+Expected refusals are aggregated separately from answer quality, because scoring a correct
+refusal against the answer rubric counts the right behaviour as a failure.
 
 ### Local sample index (offline ablations)
 
@@ -634,7 +643,7 @@ tests/
 **Now:** Factiva retrieve quality loop, intent-aware ranking, contextual passage
 retrieval, offline-capable retrieval metrics including cost-normalized coverage, and
 answer-level A1 scoring with an independent judge, re-judgeable artifacts, and measured
-abstention recall (0.800).
+abstention recall (0.900 correct refusal, 0.019 false refusal).
 
 **Known gaps, stated plainly:**
 - **Citation integrity is still the binding gate (0.625–0.688 depending on run).** Iterating
