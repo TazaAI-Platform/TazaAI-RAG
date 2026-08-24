@@ -175,14 +175,18 @@ class FactivaRetrievalClient:
             """
             rate_limited = resp is not None and resp.status_code == 429
             hint = resp.headers.get("retry-after") if resp is not None else None
+            delay: float | None = None
             if hint:
                 try:
-                    time.sleep(min(45.0, float(hint)) + random.uniform(0, 0.3))
-                    return
+                    delay = min(45.0, float(hint))
                 except ValueError:
-                    pass
-            ceiling = 30.0 if rate_limited else 4.0
-            time.sleep(min(ceiling, 0.75 * (2**attempt)) + random.uniform(0, 0.3))
+                    # Some gateways send an HTTP-date instead of seconds; fall back to
+                    # backoff rather than guessing at a format.
+                    delay = None
+            if delay is None:
+                ceiling = 30.0 if rate_limited else 4.0
+                delay = min(ceiling, 0.75 * (2**attempt))
+            time.sleep(delay + random.uniform(0, 0.3))
 
         with httpx.Client(timeout=90.0) as client:
 

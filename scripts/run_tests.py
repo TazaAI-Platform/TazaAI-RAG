@@ -64,6 +64,8 @@ MODULES = [
     "tests.test_repair_loop",
     "tests.test_cli_output",
     "tests.test_gold_quality",
+    "tests.test_source_invariants",
+    "tests.test_factiva_retry",
     "tests.test_smoke",
 ]
 
