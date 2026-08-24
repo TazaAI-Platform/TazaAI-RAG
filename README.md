@@ -225,21 +225,48 @@ taza-rag eval-a1 --compare                                  # vs single-call bas
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
 ```
 
-16 gold queries, `top_k=10`, generator `gpt-4o-mini`, judge `gpt-5`:
+**All 52 gold queries**, `top_k=10`, generator `gpt-4o-mini`, judge `gpt-5`, verification on.
+Every row scored; no query was dropped to an upstream failure.
 
-| A1 criterion | Verification off | Verification on | Delta |
-|--------------|-----------------|-----------------|-------|
-| **Accuracy** (hard gate, all 4 checks) | 0.438 | **0.688** | +0.250 |
-| ├ factual correctness | 0.438 | 0.750 | +0.312 |
-| ├ citation integrity | 0.438 | 0.688 | +0.250 |
-| ├ no hallucinations | 0.688 | 0.750 | +0.062 |
-| └ contextual integrity | 0.750 | 0.812 | +0.062 |
-| Relevance (1–3) | 2.50 | 2.38 | −0.125 |
-| Completeness (1–3) | 1.94 | 1.62 | −0.312 |
-| Clarity (1–3) | 2.94 | 2.88 | −0.062 |
+| A1 criterion | 16 queries | **52 queries** |
+|--------------|-----------|----------------|
+| **Accuracy** (hard gate, all 4 checks) | 0.688 | **0.538** |
+| ├ factual correctness | 0.750 | 0.596 |
+| ├ citation integrity | 0.688 | 0.577 |
+| ├ no hallucinations | 0.750 | 0.654 |
+| └ contextual integrity | 0.812 | 0.673 |
+| Relevance (1–3) | 2.38 | 2.42 |
+| Completeness (1–3) | 1.62 | 1.71 |
+| Clarity (1–3) | 2.88 | 2.88 |
+| Overall pass (Accuracy + all dims ≥ 2) | — | 0.365 |
+| False abstention on answerable queries | — | 0.019 |
 
-The verification-on column was re-measured after the claim-group fix described below; the
-figures it replaced were produced by a verifier that mis-flagged correctly cited prose.
+**The 16-query number was optimistic by 0.15.** This is the whole argument for expanding
+gold: the smaller set was not merely noisier, it was flattering, and the harder intents it
+omitted are where the system is weakest. Accuracy by intent ranges from 0.75 on
+`industry_scan` and `event_tracking` down to 0.25 on `geographic_assessment` and 0.33 on
+`risk_compliance` and `brand_perception` — spreads that 16 rows across five intents could
+not show at all. Median latency is 19.2s per verified answer, p90 30.0s.
+
+Verification does most of the mechanical work it claims: 118 unsupported claims flagged
+across 52 answers, 15 left after repair, 37 of 52 answers fully clean at exit, at 1.35
+repair calls per answer.
+
+#### A quarter of answers were wrongly recorded as refusals
+
+The run initially reported a 0.250 abstention rate on a gold set where every query is
+answerable. All 13 were traced to the repair stage, and 12 of the 13 carried a complete
+cited answer — one began "OpenAI is preparing for a potential IPO and has added two
+independent board members", which is not a refusal by any reading.
+
+The cause was in the repair prompt: it invites `abstain=true` when material is dropped, and
+the model sets that flag while still answering, reading it as "I removed something". The
+code trusted the flag. Abstention is now derived from the text — an answer carrying a cited
+factual claim is not a refusal, whatever flag accompanies it — and the corrected rate is
+0.019, a single genuine refusal.
+
+This corrects a reported metric, not the grades: the judge scores the answer text and never
+saw the flag, so Accuracy, Relevance and Completeness above are unaffected.
 
 ### Grounding verification
 
@@ -355,11 +382,11 @@ It was wrong, for three separate reasons worth recording:
 The residual failures are real, not judge pedantry. Spot-checking flagged claims against the
 stored evidence by string search confirms them: one answer asserted "record profits" and
 another "substantial market value gains", and neither phrase nor its support appears anywhere
-in the retrieved text. **Citation integrity at 0.688 remains the open defect.** The shape of it
-has changed, though: deterministic uncited claims are now zero after repair, so what is left is
-paraphrase-level over-reach — the entailment check flags 31 claims across 16 answers for
-attribution, certainty or magnitude the excerpt does not carry, and the single repair pass does
-not resolve all of them.
+in the retrieved text. Citation integrity is 0.577 on the full 52-query set, and its shape has
+changed: deterministic uncited claims are largely resolved by repair, so what remains is
+paraphrase-level over-reach — the entailment check flags 118 claims across 52 answers for
+attribution, certainty or magnitude the excerpt does not carry, and repair clears all but 15.
+On the full set **Completeness (1.71) is now the binding constraint**, not citation integrity.
 
 Reproduce the judge comparison — the answers are held fixed so only the judge varies:
 
@@ -506,15 +533,21 @@ specifically so it survives those `except Exception` handlers and cannot be swal
 the network also cut the suite from 7.0s to 1.8s, which is the same fact from the other side:
 those tests had been going over the wire.
 
-103 offline tests cover entity extraction and splitting, multi-entity tiering,
+121 offline tests cover entity extraction and splitting, multi-entity tiering,
 document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
 position penalty), claim verification (citation inheritance and its paragraph boundary,
 figure grounding, short-claim detection), the repair loop (convergence, budget, and the
 guarantee that a bad rewrite is discarded), provider-error handling (rate-limit retry,
-quota as fatal, temperature fallback), CLI rendering, and the gold set itself (whole-word
-term matching, spelling alternation, intent stratification floor). None require network
-access or API credentials.
+quota as fatal, temperature fallback), Factiva retry behaviour (429 persistence,
+`Retry-After`, HTTP-date fallback, 401 refresh, 400 not retried), CLI rendering, credential
+redaction, and the gold set itself (whole-word term matching, spelling alternation, intent
+stratification floor). None require network access or API credentials.
+
+Three static checks cover defect *classes* rather than instances, each of which shipped as a
+real bug: an exception caught but never imported (twice — it raises `NameError` exactly when
+a run fails), a handler that discards the error it caught, and model text printed as rich
+markup.
 
 That last one earns its place: rich reads `[c1]` as a style tag and silently deletes it, so
 `taza-rag answer` was printing correctly cited answers with every marker stripped — visibly
@@ -527,7 +560,7 @@ reach, so they are covered with a fake client rather than by hoping they work.
 ## What “good” looks like
 
 - **A1 Accuracy under an independent judge** — the rubric's automatic-fail gate, currently
-  0.688 and limited by citation integrity
+  0.538 on 52 queries
 - `aspect_coverage@5`, `entity_precision@5` and `noise_rate@5` beat the `--raw` baseline
 - Coverage per 1k tokens of evidence improves, not just coverage
 - Human Relevance/Completeness ≥ 2 on the generated worksheet
@@ -583,9 +616,12 @@ abstention recall (0.800).
 - **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
   on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
   no A1 figure here has been calibrated against a human scorer.
-- **Retrieval gold is now 52 rows across all ten intents; answer-level A1 is still scored on
-  16.** The retrieval numbers above are reasonably stable; every A1 figure in this file is
-  not, and re-running A1 on the full 52 is the next measurement to do.
+- **A1 Accuracy is 0.538 on the full 52-query set**, against 0.688 on the old 16. The
+  smaller set was flattering, not just noisy. Weakest intents: `geographic_assessment`
+  (0.25), `risk_compliance` and `brand_perception` (0.33).
+- **Completeness is the binding dimension now, not citation integrity.**
+  `missing_narrative` is the top failure tag on 41 of 52 answers, and mean Completeness is
+  1.71 against a pass threshold of 2.
 - **The upstream API fails a few percent of calls.** Two of 52 queries hit
   `All 3 query variants failed` during one validation pass and both succeeded on retry, and
   a single 429 previously aborted an entire run five minutes in. Rate limits now get extra

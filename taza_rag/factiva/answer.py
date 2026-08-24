@@ -9,6 +9,7 @@ from taza_rag.factiva.retrieve import FactivaRetrievalClient, hits_to_citations
 from taza_rag.factiva.verify import (
     REPAIR_SYSTEM,
     VerificationReport,
+    _has_factual_content,
     describe_problems,
     split_claims,
     verify_answer,
@@ -166,6 +167,18 @@ def answer_with_factiva(
     )
 
 
+def _is_substantive(text: str) -> bool:
+    """Does this text actually answer, whatever flag came back with it?
+
+    The repair prompt asks for `abstain=true` when little survives, and the model sets it
+    while still returning a full cited answer — it reads the flag as "I removed something".
+    Trusting it marked a quarter of answerable queries as refusals in a 52-query run, all
+    of them carrying real answers. The text is the evidence, not the flag.
+    """
+    claims = split_claims(text)
+    return any(c.effective_labels and _has_factual_content(c.text) for c in claims)
+
+
 def _verify_and_repair(
     query: str,
     context: str,
@@ -198,6 +211,7 @@ def _verify_and_repair(
         if repaired is None:
             break
         text, new_abstain, new_json = repaired
+        new_abstain = new_abstain and not _is_substantive(text)
         new_report = verify_answer(text, evidence)
         rounds.append(new_report.summary())
         # Ties keep the earlier answer: each rewrite thins the answer, and Completeness

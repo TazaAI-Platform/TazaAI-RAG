@@ -58,6 +58,40 @@ BAD_FIGURE = "Profit rose to 9.9 billion euros [c1]."
 WORSE = "Profit rose to 9.9 billion euros and costs fell 42% [c1]."
 
 
+def _run_flagging_abstain(initial, repaired_answer):
+    """Repair returns abstain=true alongside a full answer, as the real model does."""
+    def script(system, user, **kwargs):
+        return {"answer": repaired_answer, "abstain": True, "used_citations": ["c1"]}
+
+    original_answer, original_verify = amod.chat_json, vmod.chat_json
+    amod.chat_json = script
+    vmod.chat_json = _entailment_all_supported
+    try:
+        text, abstained, _json, report = _verify_and_repair(
+            "q", "sources", initial, False, {}, EVIDENCE, max_rounds=1
+        )
+    finally:
+        amod.chat_json = original_answer
+        vmod.chat_json = original_verify
+    return text, abstained
+
+
+def test_a_repaired_answer_with_real_content_is_not_marked_a_refusal():
+    """The repair prompt invites abstain=true when material is dropped, and the model sets
+    it while still answering. Trusting the flag marked 13 of 52 answerable queries as
+    refusals, every one carrying a full cited answer."""
+    text, abstained = _run_flagging_abstain(BAD_FIGURE, CLEAN)
+    assert text == CLEAN
+    assert abstained is False, "a cited, factual answer is not an abstention"
+
+
+def test_a_genuine_refusal_from_repair_is_still_respected():
+    refusal = "The sources do not provide the requested figure."
+    text, abstained = _run_flagging_abstain(BAD_FIGURE, refusal)
+    assert text == refusal
+    assert abstained is True, "a real refusal must stay an abstention"
+
+
 def test_a_clean_answer_is_never_rewritten():
     text, report, calls = _run(CLEAN, [])
     assert text == CLEAN
