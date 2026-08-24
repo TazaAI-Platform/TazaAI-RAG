@@ -225,10 +225,48 @@ answers. `taza_rag/factiva/verify.py` checks the answer instead.
 | Claim support | one batched LLM call | attribution, certainty or magnitude the excerpt does not carry |
 
 The figure and citation checks are deterministic, so they cost nothing and cannot themselves
-hallucinate. Only paraphrase-level support needs a model. Anything flagged goes to a single
-corrective pass, and the rewrite is then re-checked deterministically, since a rewrite can
-introduce its own bad figures. Both reports are kept on the answer, so a residual problem is
-visible rather than silently accepted.
+hallucinate. Only paraphrase-level support needs a model. Anything flagged goes to a corrective
+pass which is then re-checked, since a rewrite can introduce its own bad figures. Every attempt
+is kept on the answer, so a residual problem is visible rather than silently accepted.
+
+Rewriting is not monotonic — a pass that drops a bad figure can overstate something else — so
+each attempt is scored and the best one is returned. Ties keep the earlier answer, because
+Completeness is the binding constraint and every rewrite thins the text. Enabling the loop can
+therefore leave an answer unchanged but never degrade it, which is asserted in the tests rather
+than hoped for.
+
+Repair iterates. One pass left roughly a third of flagged claims standing and re-checked
+only the deterministic rules, so the entailment failures that dominate the remainder were
+never re-tested — the pass was assumed to have worked. Each round now re-runs the full
+check, up to `verify_max_rounds` (3).
+
+| | One pass | Iterated |
+|---|---|---|
+| Unsupported claims flagged → remaining | 39 → not re-checked | 39 → **6** |
+| Answers fully clean at exit | 12/16 *(deterministic only)* | 11/16 *(entailment included)* |
+| Repairs per answer | 0.88 | 1.50 |
+| Median answer latency | 14.5s | 18.4s |
+| Accuracy (hard gate) | 0.688 | 0.625 |
+| ├ factual correctness | 0.750 | **0.875** |
+| ├ citation integrity | 0.688 | 0.625 |
+| ├ no hallucinations | 0.750 | **0.875** |
+| └ contextual integrity | 0.812 | **0.938** |
+| Completeness | 1.625 | **1.812** |
+
+**The two "fully clean" figures are not comparable, and the loop is the stricter of the
+two.** The one-pass run only re-checked deterministic rules after rewriting, so its 12/16
+means "no bad figures", while the loop's 11/16 means "no bad figures *and* no unsupported
+paraphrase". Read the first row instead: 39 flagged claims down to 6, confirmed rather than
+assumed.
+
+The judge's verdict is more equivocal and is reported as measured. Three of four Accuracy
+gates improve, Completeness rises 0.19 — so iterating does **not** thin answers the way a
+single blunt pass did — yet citation integrity falls 0.06 and takes the overall gate with
+it, since Accuracy requires all four. At n=16, where one query is worth 0.0625 and repeat
+runs move Accuracy by 0.19, none of these individual deltas is distinguishable from noise.
+The defensible claim is the mechanical one: far more flagged claims are resolved, under a
+stricter check, for 0.6 extra repair calls and ~4s of latency. The claim I cannot make is
+that A1 Accuracy improved.
 
 Citation presence is checked per claim **group**, not per sentence. Journalistic prose sources
 a group once, usually at its end, so requiring a marker on every sentence flagged ordinary
@@ -430,15 +468,24 @@ python scripts/run_tests.py     # stdlib runner, no pytest needed
 pytest tests/                   # if dev extras are installed
 ```
 
-80 offline tests cover entity extraction and splitting, multi-entity tiering,
+**The runner blocks outbound sockets and fails any test that reaches for one.** This is not
+hygiene for its own sake. Two tests here were passing for the wrong reason: the network call
+they made failed, the library wrapped it as `LLMError`, and a caller caught that as a legitimate
+degradation path — so the assertion never ran. `NetworkAccessInTest` derives from `BaseException`
+specifically so it survives those `except Exception` handlers and cannot be swallowed. Blocking
+the network also cut the suite from 7.0s to 1.8s, which is the same fact from the other side:
+those tests had been going over the wire.
+
+88 offline tests cover entity extraction and splitting, multi-entity tiering,
 document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
 position penalty), claim verification (citation inheritance and its paragraph boundary,
-figure grounding, short-claim detection), and provider-error handling (rate-limit retry,
+figure grounding, short-claim detection), the repair loop (convergence, budget, and the
+guarantee that a bad rewrite is discarded), and provider-error handling (rate-limit retry,
 quota as fatal, temperature fallback). None require network access or API credentials.
 
-The provider-error and verification paths are the ones a live smoke test cannot reach, so
-they are covered with a fake client rather than by hoping they work.
+The provider-error, verification and repair paths are the ones a live smoke test cannot
+reach, so they are covered with a fake client rather than by hoping they work.
 
 ## What “good” looks like
 
@@ -482,12 +529,20 @@ answer-level A1 scoring with an independent judge, re-judgeable artifacts, and m
 abstention recall (0.800).
 
 **Known gaps, stated plainly:**
-- **Citation integrity is improved but still the weak gate (0.688).** Deterministic uncited
-  claims are now zero after repair, so the remainder is paraphrase-level over-reach caught by
-  the entailment check: 31 flagged claims across 16 answers, of which one repair pass clears
-  most but not all. Looping repair until the checks are clean is the obvious next step.
-- **Verification trades Completeness for Accuracy** (−0.31). Defensible for a Dow Jones
-  product where Accuracy is the automatic-fail gate, but it is a real cost, not a free win.
+- **Citation integrity is still the binding gate (0.625–0.688 depending on run).** Iterating
+  repair cut unsupported claims from 39 to 6 and lifted three of the four Accuracy gates, but
+  citation integrity did not move and it is the gate that decides the others. Six claims across
+  16 answers still assert more than the excerpt carries.
+- **Iterating repair did not improve measured A1 Accuracy** (0.688 → 0.625, within the ±0.19
+  noise of n=16). It is justified by the mechanical result — flagged claims resolved under a
+  stricter check — not by the judge's score. Worth re-measuring on a larger gold set before
+  treating either number as real.
+- **Verification's Completeness cost is smaller than first reported.** A single blunt pass cost
+  0.31; iterating recovered most of it (1.62 → 1.81) by targeting specific claims instead of
+  thinning the whole answer.
+- **Latency is now measured but not optimised.** Median 18.4s per verified answer (5.6s
+  retrieve, 4.5s generate, ~10s verify+repair). The verification stage is the majority of it and
+  is serial by construction.
 - **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
   on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
   no A1 figure here has been calibrated against a human scorer.
@@ -504,7 +559,8 @@ abstention recall (0.800).
   see the caveats above on metric saturation and tier-ordered ranking.
 
 **Next candidates:**
-- Loop the repair pass until the deterministic checks are clean, rather than one attempt
+- Expand gold before further answer-side tuning: at n=16 the repair loop's effect is
+  unmeasurable either way, so the next change would be tuned against noise
 - Human calibration of the six Completeness-limited queries against the A1 rubric
 - Cross-encoder / vendor reranker on fused candidates
 - Expand gold to the remaining five intents, and to a harder set with headroom

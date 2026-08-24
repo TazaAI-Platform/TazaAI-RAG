@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Evidence budget for generation. Both retrieval paths get the same token cost,
     # so passage retrieval spends its saving on more sources rather than less evidence.
     answer_context_tokens: int = 3000
+    # Corrective passes allowed per answer. One pass left roughly a third of flagged
+    # claims unresolved, and each round costs a repair call plus a re-verify call.
+    verify_max_rounds: int = 3
 
     # Factiva RAG API
     factiva_rag_client_id: str = ""

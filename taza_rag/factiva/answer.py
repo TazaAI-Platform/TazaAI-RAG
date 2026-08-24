@@ -129,20 +129,15 @@ def answer_with_factiva(
     verification: dict[str, Any] | None = None
 
     if verify and answer_text and not abstained:
-        evidence = _evidence_by_label(selected)
-        report = verify_answer(answer_text, evidence)
-        verification = {"initial": report.summary()}
-
-        if report.blocking:
-            repaired = _repair(query, context, answer_text, report)
-            if repaired is not None:
-                answer_text, abstained, raw_json = repaired
-                # Re-check deterministically: a rewrite can introduce its own bad figures.
-                recheck = verify_answer(answer_text, evidence, check_entailment=False)
-                verification["after_repair"] = recheck.summary()
-                verification["repaired"] = True
-        else:
-            verification["repaired"] = False
+        answer_text, abstained, raw_json, verification = _verify_and_repair(
+            query,
+            context,
+            answer_text,
+            abstained,
+            raw_json,
+            _evidence_by_label(selected),
+            max_rounds=settings.verify_max_rounds,
+        )
     t3 = time.perf_counter()
 
     label_to_hit = {f"c{i}": h for i, h in enumerate(selected, start=1)}
@@ -171,17 +166,75 @@ def answer_with_factiva(
     )
 
 
+def _verify_and_repair(
+    query: str,
+    context: str,
+    answer_text: str,
+    abstained: bool,
+    raw_json: dict[str, Any],
+    evidence: dict[str, str],
+    *,
+    max_rounds: int,
+) -> tuple[str, bool, dict[str, Any], dict[str, Any]]:
+    """Repair until the checks are clean, the budget runs out, or progress stalls.
+
+    A single pass left roughly a third of flagged claims standing, and it re-checked only
+    the deterministic rules — so the entailment failures that dominate the remainder were
+    never re-tested. Each round here re-runs the full check, which is what makes an
+    unsupported-claim fix verifiable rather than assumed.
+
+    Rewriting is not monotonic: a pass that drops a bad figure can overstate something
+    else. So every attempt is scored and the best one is returned, which means enabling
+    this can leave an answer unchanged but never degrade it.
+    """
+    report = verify_answer(answer_text, evidence)
+    rounds = [report.summary()]
+    best = (answer_text, abstained, raw_json, report)
+
+    for _ in range(max_rounds):
+        if not best[3].blocking:
+            break
+        repaired = _repair(query, context, best[0], best[3], attempt=len(rounds))
+        if repaired is None:
+            break
+        text, new_abstain, new_json = repaired
+        new_report = verify_answer(text, evidence)
+        rounds.append(new_report.summary())
+        # Ties keep the earlier answer: each rewrite thins the answer, and Completeness
+        # is already the binding constraint.
+        if len(new_report.blocking) >= len(best[3].blocking):
+            break
+        best = (text, new_abstain, new_json, new_report)
+
+    verification = {
+        "initial": rounds[0],
+        "final": best[3].summary(),
+        "rounds": rounds,
+        "repairs_applied": len(rounds) - 1,
+        "resolved": not best[3].blocking,
+    }
+    return best[0], best[1], best[2], verification
+
+
 def _repair(
-    query: str, context: str, answer: str, report: VerificationReport
+    query: str, context: str, answer: str, report: VerificationReport, *, attempt: int = 1
 ) -> tuple[str, bool, dict[str, Any]] | None:
     """One corrective pass. Returns None if the model could not be reached."""
     problems = describe_problems(report, split_claims(answer))
     if not problems:
         return None
+    retry_note = (
+        ""
+        if attempt <= 1
+        else (
+            f"\n\nThis is correction attempt {attempt}. A previous rewrite still failed "
+            "these checks, so remove the offending material rather than rephrasing it."
+        )
+    )
     user = (
         f"Question: {query}\n\nSources:\n{context}\n\n"
         f"Answer that failed verification:\n{answer}\n\n"
-        f"Problems found:\n{problems}"
+        f"Problems found:\n{problems}{retry_note}"
     )
     try:
         fixed: dict[str, Any] = chat_json(REPAIR_SYSTEM, user, temperature=0.0)
