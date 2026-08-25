@@ -1,8 +1,14 @@
 const EXAMPLES = [
-  "SoftBank Group",
-  "Deutche Bank restructuring",
-  "EU AI Act compliance",
-  "Nvidia chip export restrictions",
+  { intent: "entity", q: "SoftBank Group" },
+  { intent: "topical", q: "private credit market trends" },
+  { intent: "executive", q: "Jerome Powell" },
+  { intent: "geographic", q: "Brazil deforestation trends" },
+  { intent: "industry", q: "pharmaceutical patent cliff" },
+  { intent: "event", q: "latest OPEC+ production decision" },
+  { intent: "known item", q: "IMF World Economic Outlook latest projections" },
+  { intent: "risk", q: "sanctions compliance risk for exporters" },
+  { intent: "competitive", q: "competition between Airbus and Boeing on aircraft orders" },
+  { intent: "brand", q: "Boeing reputation after safety incidents" },
 ];
 
 const RAIL = [
@@ -19,8 +25,12 @@ const $ = (id) => document.getElementById(id);
 
 async function boot() {
   $("examples").innerHTML =
-    "Try " +
-    EXAMPLES.map((q) => `<button type="button" data-q="${escapeAttr(q)}">${escapeHtml(q)}</button>`).join(" · ");
+    `<span class="lead">Try</span>` +
+    EXAMPLES.map(
+      (ex) =>
+        `<span class="ex"><i>${escapeHtml(ex.intent)}</i>` +
+        `<button type="button" data-q="${escapeAttr(ex.q)}">${escapeHtml(ex.q)}</button></span>`
+    ).join("");
   $("examples").addEventListener("click", (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
