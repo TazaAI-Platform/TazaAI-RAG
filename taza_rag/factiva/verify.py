@@ -42,6 +42,22 @@ For each numbered claim, decide:
 Return JSON: {"verdicts": [{"index": int, "supported": bool, "reason": string}]}
 """
 
+SENTENCE_REPAIR_SYSTEM = """You are correcting ONE sentence of a Dow Jones / Factiva research
+answer that failed verification. You are given the sentence, the excerpts it cites, and the
+problem found.
+
+Return a corrected version of that sentence alone:
+- State only what the cited excerpts support, keeping every citation marker like [c1].
+- Drop a figure that is absent from the excerpts; never substitute a guess.
+- Where attribution, certainty or magnitude was overstated, state the weaker supported form.
+- Keep as much of the original meaning as the excerpts allow. Prefer weakening a claim to
+  deleting it.
+- If nothing in the sentence is supportable, return an empty string for `sentence`.
+- Do not add new facts, do not comment on the correction, and do not return anything but the
+  sentence.
+Return JSON: {"sentence": string}
+"""
+
 REPAIR_SYSTEM = """You are correcting a Dow Jones / Factiva research answer that failed
 verification. You are given the sources, the answer, and the specific problems found.
 

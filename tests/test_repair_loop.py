@@ -16,17 +16,30 @@ EVIDENCE = {
 
 
 class _ScriptedRepair:
-    """Returns the next scripted answer for each repair call."""
+    """Replays scripted repairs for whichever repair path the loop reaches for.
 
-    def __init__(self, answers):
-        self.answers = list(answers)
+    The loop tries sentence-level repair first and falls back to a whole-answer rewrite, so a
+    stub that only answers one shape silently exercises the other path with a missing key.
+    Each scripted entry is the sentence to substitute for the flagged one; `None` makes the
+    sentence path defer so the fallback runs with the same entry as a whole answer.
+    """
+
+    def __init__(self, replacements):
+        self.replacements = list(replacements)
         self.calls = 0
+        self.sentence_calls = 0
+        self.rewrite_calls = 0
 
     def __call__(self, system, user, **kwargs):
         self.calls += 1
-        if not self.answers:
+        if not self.replacements:
             raise AssertionError("repair called more times than scripted")
-        return {"answer": self.answers.pop(0), "abstain": False, "used_citations": ["c1"]}
+        value = self.replacements.pop(0)
+        if "ONE sentence" in system:
+            self.sentence_calls += 1
+            return {"sentence": "" if value is None else value}
+        self.rewrite_calls += 1
+        return {"answer": value or "", "abstain": False, "used_citations": ["c1"]}
 
 
 def _entailment_all_supported(system, user, **kwargs):
@@ -56,6 +69,78 @@ def _run(initial, repairs, *, max_rounds=3):
 CLEAN = "Profit rose to 1.2 billion euros [c1]."
 BAD_FIGURE = "Profit rose to 9.9 billion euros [c1]."
 WORSE = "Profit rose to 9.9 billion euros and costs fell 42% [c1]."
+
+
+def _surgical(answer, evidence, sentence_reply):
+    """Run only the sentence-level repair, recording which sentences it was asked about."""
+    from taza_rag.factiva.answer import _repair_sentences
+
+    asked = []
+
+    def fake(system, user, **kwargs):
+        asked.append(user.split("Sentence:\n")[1].split("\n")[0])
+        return {"sentence": sentence_reply(asked[-1])}
+
+    original_answer, original_verify = amod.chat_json, vmod.chat_json
+    amod.chat_json = fake
+    vmod.chat_json = _entailment_all_supported
+    try:
+        report = vmod.verify_answer(answer, evidence, check_entailment=False)
+        out = _repair_sentences(answer, report, evidence)
+    finally:
+        amod.chat_json = original_answer
+        vmod.chat_json = original_verify
+    return out, asked
+
+
+GOOD_A = "Profit rose to 1.2 billion euros [c1]."
+GOOD_B = "The bank cut costs in its investment bank [c2]."
+BAD = "Revenue hit 9.9 billion euros [c1]."
+SURGICAL_EV = {
+    "c1": "Deutsche Bank said profit rose to 1.2 billion euros, helped by lower provisions.",
+    "c2": "The bank cut costs in its investment bank.",
+}
+
+
+def test_surgical_repair_only_touches_the_flagged_sentence():
+    """A whole-answer rewrite can damage claims that passed, which is why broader answers
+    lost Accuracy faster than they gained Completeness."""
+    answer = f"{GOOD_A} {BAD} {GOOD_B}"
+    out, asked = _surgical(answer, SURGICAL_EV, lambda s: "")
+    assert asked == [BAD], f"asked about unflagged sentences: {asked}"
+    assert GOOD_A in out and GOOD_B in out, "a passing sentence was altered"
+    assert "9.9" not in out
+
+
+def test_surgical_repair_can_weaken_rather_than_delete():
+    answer = f"{GOOD_A} {BAD}"
+    weaker = "Revenue was not disclosed in the cited source [c1]."
+    out, _asked = _surgical(answer, SURGICAL_EV, lambda s: weaker)
+    assert GOOD_A in out and weaker in out
+
+
+def test_surgical_repair_leaves_no_double_spacing_behind():
+    answer = f"{GOOD_A} {BAD} {GOOD_B}"
+    out, _ = _surgical(answer, SURGICAL_EV, lambda s: "")
+    assert "  " not in out and out == out.strip()
+
+
+def test_surgical_repair_defers_when_the_model_is_unreachable():
+    """Returning None lets the caller fall back to a whole-answer rewrite."""
+    from taza_rag.factiva.answer import _repair_sentences
+
+    def boom(system, user, **kwargs):
+        raise amod.LLMError("no credits")
+
+    original_answer, original_verify = amod.chat_json, vmod.chat_json
+    amod.chat_json = boom
+    vmod.chat_json = _entailment_all_supported
+    try:
+        report = vmod.verify_answer(f"{GOOD_A} {BAD}", SURGICAL_EV, check_entailment=False)
+        assert _repair_sentences(f"{GOOD_A} {BAD}", report, SURGICAL_EV) is None
+    finally:
+        amod.chat_json = original_answer
+        vmod.chat_json = original_verify
 
 
 def _run_flagging_abstain(initial, repaired_answer):

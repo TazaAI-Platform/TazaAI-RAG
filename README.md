@@ -310,6 +310,25 @@ factual claim is not a refusal, whatever flag accompanies it — and the correct
 This corrects a reported metric, not the grades: the judge scores the answer text and never
 saw the flag, so Accuracy, Relevance and Completeness above are unaffected.
 
+### Extract, then compose
+
+Asking the writer to cover more in one pass raised Completeness and cost the Accuracy gate.
+The shipping path now does coverage *before* writing: one call extracts cited facts, a
+deterministic filter drops any fact whose figures are not in the cited excerpt, and a second
+call writes only from what survived.
+
+On the first 16 gold queries, against the stored one-shot answers for the same ids:
+
+| | One-shot | Extract then compose |
+|---|---|---|
+| Accuracy (gate) | 0.500 | **0.562** |
+| Each Accuracy gate | 0.500–0.562 | **0.688** |
+| Overall pass | 0.125 | **0.312** |
+| Completeness | 1.56 | 1.50 |
+
+Accuracy moved; Completeness did not. That is why this ships and the coverage prompt did not.
+Ablate with `--no-facts`.
+
 ### Grounding verification
 
 The generator is told to cite everything and invent nothing, and was then trusted. Under an
@@ -580,7 +599,7 @@ specifically so it survives those `except Exception` handlers and cannot be swal
 the network also cut the suite from 7.0s to 1.8s, which is the same fact from the other side:
 those tests had been going over the wire.
 
-121 offline tests cover entity extraction and splitting, multi-entity tiering,
+137 offline tests cover entity extraction and splitting, multi-entity tiering,
 document-type detection, stemming, MMR, near-duplicate collapse, contextual passage
 retrieval (splitting, id stability, lead-signal scoping, one-passage-per-document,
 position penalty), claim verification (citation inheritance and its paragraph boundary,

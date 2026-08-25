@@ -18,6 +18,7 @@ from rich.table import Table
 
 from taza_rag.config import settings
 from taza_rag.eval.dj_a1 import judge_a1, judge_model_name
+from taza_rag.eval.factiva_retrieval import term_matches
 from taza_rag.eval.retrieval import load_gold
 from taza_rag.factiva.answer import answer_with_factiva
 from taza_rag.factiva.retrieve import FactivaRetrieveError
@@ -56,13 +57,35 @@ def _score_one(
     top_k: int,
     judge_model: str | None = None,
     verify: bool = True,
+    extract_facts: bool | None = None,
 ) -> tuple[AnswerResult, A1Judgment, str]:
     result = answer_with_factiva(
-        ex.query, top_k=top_k, intent=ex.intent, raw=raw, verify=verify
+        ex.query,
+        top_k=top_k,
+        intent=ex.intent,
+        raw=raw,
+        verify=verify,
+        extract_facts=extract_facts,
     )
     evidence = _excerpts(result)
     judgment = judge_a1(ex.id, result, evidence, model=judge_model)
     return result, judgment, evidence
+
+
+def answer_aspect_coverage(answer: str, aspects: list[str]) -> float | None:
+    """Share of the gold set's angles that appear in the answer itself.
+
+    A judge-free Completeness proxy, and the reason it exists: two judges scoring the same
+    52 answers put Accuracy 0.29 apart, which is wider than any effect worth chasing. This
+    is a whole-word string match against labels written before the answer existed, so it
+    cannot drift with judge temperament.
+
+    It measures whether an angle was mentioned, not whether it was covered well — so it is
+    a floor on Completeness rather than a substitute for the rubric.
+    """
+    if not aspects:
+        return None
+    return sum(1 for a in aspects if term_matches(a, answer)) / len(aspects)
 
 
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -92,6 +115,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_relevance": None,
             "mean_completeness": None,
             "mean_clarity": None,
+            "mean_answer_aspect_coverage": None,
             "overall_pass_rate": None,
             "abstention_rate": None,
             "abstention_recall": (
@@ -114,6 +138,15 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_relevance": _mean([r["a1"]["relevance"]["score"] for r in scored]),
         "mean_completeness": _mean([r["a1"]["completeness"]["score"] for r in scored]),
         "mean_clarity": _mean([r["a1"]["clarity"]["score"] for r in scored]),
+        # Judge-free Completeness floor. Reported alongside mean_completeness so a change can
+        # be checked against something that does not move with judge temperament.
+        "mean_answer_aspect_coverage": _mean(
+            [
+                r["answer_aspect_coverage"]
+                for r in scored
+                if r.get("answer_aspect_coverage") is not None
+            ]
+        ),
         "overall_pass_rate": _mean([1.0 if r["overall_pass"] else 0.0 for r in scored]),
         # Refusing an answerable query is its own failure mode, so track both directions.
         "abstention_rate": _mean([1.0 if r["abstained"] else 0.0 for r in answerable]),
@@ -137,6 +170,7 @@ def run_a1_eval(
     compare_baseline: bool = False,
     judge_model: str | None = None,
     verify: bool = True,
+    extract_facts: bool | None = None,
 ) -> dict[str, Any]:
     gold = load_gold(gold_path)
     if limit:
@@ -149,7 +183,12 @@ def run_a1_eval(
     for ex in gold:
         try:
             result, judgment, evidence = _score_one(
-                ex, raw=False, top_k=top_k, judge_model=judge_model, verify=verify
+                ex,
+                raw=False,
+                top_k=top_k,
+                judge_model=judge_model,
+                verify=verify,
+                extract_facts=extract_facts,
             )
         except (LLMError, FactivaRetrieveError) as e:
             # A provider failure is not an evaluation result; record and move on. Retrieval
@@ -168,6 +207,9 @@ def run_a1_eval(
             "accuracy_pass": judgment.accuracy.pass_,
             "overall_pass": judgment.overall_pass,
             "a1": judgment.model_dump(),
+            "answer_aspect_coverage": answer_aspect_coverage(
+                result.answer, ex.nice_to_have_terms
+            ),
             "answer": result.answer,
             "citations": [c.doc_id for c in result.citations],
             # Full citation records, not just doc ids: re-judging with these dropped makes
@@ -184,7 +226,12 @@ def run_a1_eval(
         if compare_baseline:
             try:
                 b_result, b_judgment, _ = _score_one(
-                    ex, raw=True, top_k=top_k, judge_model=judge_model, verify=verify
+                    ex,
+                    raw=True,
+                    top_k=top_k,
+                    judge_model=judge_model,
+                    verify=verify,
+                    extract_facts=extract_facts,
                 )
                 base_rows.append(
                     {

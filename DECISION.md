@@ -26,7 +26,8 @@ query → intent detection → query expansion (3 variants)
       → contextual passage split (Anthropic-style prefixes)
       → RRF fusion → relevance tiering → MMR diversification → source capping
       → token-budgeted evidence pack
-      → grounded answer with citations
+      → extract cited facts (drop any whose figures are not in the cited excerpt)
+      → compose the answer from that list only
       → claim-level verification + bounded repair loop
 ```
 
@@ -114,7 +115,7 @@ included. Reporting the lower number is the point of measuring.
 These classes are now caught mechanically rather than by attention: the test runner blocks
 network access, static checks reject an exception caught without being imported, a handler
 that discards its error, or model text printed as markup, and a lint enforces the gold set's
-intent floor and rejects degenerate terms. 126 offline tests, none able to reach the network.
+intent floor and rejects degenerate terms. 137 offline tests, none able to reach the network.
 
 ## 6. What I tried that did not work
 
@@ -128,12 +129,29 @@ Reported because negative results are cheaper to inherit than to rediscover.
 | Whole articles instead of passages | No Completeness gain at higher token cost |
 | `top_k=20`, 5,000-token budget | No Completeness gain at higher token cost |
 
-The mechanism behind the two prompt failures constrains any future attempt: citation
-integrity is a **per-answer binary gate**, so every additional claim is another chance to fail
-it. Going from 96 to 131 median words took judge-observed citation failures from 22 to 27 of
-52. Coverage is purchasable with prompt wording; passing the gate while carrying it is not.
-Broader answers need per-claim verification strong enough to support them — a verification
-problem, not a wording one.
+The mechanism behind the two prompt failures constrained the next attempt: citation
+integrity is a **per-answer binary gate**, so asking the writer to cover more at once is the
+wrong lever. The pipeline change that followed does the coverage work *before* writing.
+
+**Extract cited facts, then compose from that list** (on by default; `--no-facts` ablates it).
+A deterministic filter drops any extracted fact whose figures are not in the cited excerpt,
+so the writer cannot invent a number extraction never produced. Measured on the first 16 gold
+queries against the stored one-shot answers for the same ids (`evals/reports/a1_facts16.json`
+vs the first 16 rows of `a1_n52.json`):
+
+| | One-shot write | Extract then compose |
+|---|---|---|
+| **Accuracy** (gate) | 0.500 | **0.562** |
+| ├ each of the four gates | 0.500–0.562 | **0.688** |
+| Overall pass | 0.125 | **0.312** |
+| Completeness | 1.56 | 1.50 |
+| Relevance | 2.31 | 2.44 |
+| Median words | 101 | 94 |
+
+Accuracy moved the right way, Completeness did not. That is the opposite of the coverage
+prompt, and it is why this path ships: it protects the automatic-fail gate. At n=16 the
+Accuracy delta is one query, but all four gates moving together is the part worth believing.
+This is not yet a 52-query number.
 
 ## 7. What I would not claim
 
@@ -182,9 +200,8 @@ and rank computations with no model in the loop, which is why I trust them and l
    effects I was tuning against, so until a human anchors it, further answer-side work is
    fitting to a ruler whose graduations are wider than the differences being chased. Twenty
    scored answers would collapse that band and make every subsequent experiment meaningful.
-2. **Strengthen per-claim verification** so an answer can carry more claims without exposing
-   the citation gate — the only route to Completeness that the measurements have not already
-   closed off.
+2. **Re-measure extract-then-compose on all 52 queries.** The 16-query Accuracy gain is the
+   right direction; Completeness did not move, and n=16 is still one-query noise on the gate.
 3. **Try a stronger generator.** `gpt-4o-mini` is the cheapest part of the pipeline and, on
    this evidence, the limiting one.
 4. **Ingest News Feed / Streams into pgvector** — the point at which the owned-corpus and
@@ -196,7 +213,8 @@ and rank computations with no model in the loop, which is why I trust them and l
 
 ```bash
 taza-rag eval-retrieve --top-k 10 --compare            # retrieval vs raw baseline
-taza-rag eval-a1 --verify --top-k 10                   # A1 gate + dimensions
+taza-rag eval-a1 --verify --top-k 10                   # A1 gate + dimensions (facts on)
+taza-rag eval-a1 --verify --no-facts --top-k 10        # prior one-shot writer, for ablation
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl   # refusal behaviour
 taza-rag rejudge-a1 --source <report> --judge-model gpt-4o-mini  # judge disagreement
 python scripts/validate_gold.py                        # gold labels are satisfiable

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Corrective passes allowed per answer. One pass left roughly a third of flagged
     # claims unresolved, and each round costs a repair call plus a re-verify call.
     verify_max_rounds: int = 3
+    # Extract cited facts, then write from that list. One-shot generation left supported
+    # facts unused; asking the writer to cover more at once cost the Accuracy gate.
+    answer_extract_facts: bool = True
 
     # Factiva RAG API
     factiva_rag_client_id: str = ""

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
 from taza_rag.config import settings
 from taza_rag.factiva.pipeline import QualityRetriever
 from taza_rag.factiva.retrieve import FactivaRetrievalClient, hits_to_citations
+from taza_rag.factiva.facts import generate_from_facts
 from taza_rag.factiva.verify import (
     REPAIR_SYSTEM,
+    SENTENCE_REPAIR_SYSTEM,
     VerificationReport,
     _has_factual_content,
     describe_problems,
@@ -95,6 +98,7 @@ def answer_with_factiva(
     contextual: bool = True,
     semantic: bool = False,
     verify: bool = True,
+    extract_facts: bool | None = None,
     config_name: str | None = None,
 ) -> AnswerResult:
     """Retrieve from Factiva, then ground an answer with citations.
@@ -128,8 +132,14 @@ def answer_with_factiva(
     context, selected = _pack_context(
         hits, settings.answer_max_chunks, settings.answer_context_tokens
     )
-    user = f"Question: {query}\n\nSources:\n{context}"
-    raw_json: dict[str, Any] = chat_json(ANSWER_SYSTEM, user, temperature=0.0)
+    evidence = _evidence_by_label(selected)
+    use_facts = settings.answer_extract_facts if extract_facts is None else extract_facts
+    raw_json: dict[str, Any] | None = None
+    if use_facts:
+        raw_json = generate_from_facts(query, context, evidence)
+    if raw_json is None:
+        user = f"Question: {query}\n\nSources:\n{context}"
+        raw_json = chat_json(ANSWER_SYSTEM, user, temperature=0.0)
     t2 = time.perf_counter()
 
     answer_text = str(raw_json.get("answer") or "")
@@ -143,7 +153,7 @@ def answer_with_factiva(
             answer_text,
             abstained,
             raw_json,
-            _evidence_by_label(selected),
+            evidence,
             max_rounds=settings.verify_max_rounds,
         )
     t3 = time.perf_counter()
@@ -170,7 +180,9 @@ def answer_with_factiva(
             "verify": (t3 - t2) * 1000,
             "total": (t3 - t0) * 1000,
         },
-        config_name=used_config + ("+verified" if verify else ""),
+        config_name=used_config
+        + ("+facts" if use_facts else "")
+        + ("+verified" if verify else ""),
     )
 
 
@@ -214,11 +226,18 @@ def _verify_and_repair(
     for _ in range(max_rounds):
         if not best[3].blocking:
             break
-        repaired = _repair(query, context, best[0], best[3], attempt=len(rounds))
-        if repaired is None:
-            break
-        text, new_abstain, new_json = repaired
-        new_abstain = new_abstain and not _is_substantive(text)
+        # Surgical first: fixing the flagged sentences in place cannot damage the ones that
+        # passed. A whole-answer rewrite can, and that is why broader answers lost Accuracy
+        # faster than they gained Completeness.
+        text = _repair_sentences(best[0], best[3], evidence)
+        new_abstain, new_json = best[1], best[2]
+        if text is None:
+            repaired = _repair(query, context, best[0], best[3], attempt=len(rounds))
+            if repaired is None:
+                break
+            text, flagged_abstain, new_json = repaired
+            new_abstain = flagged_abstain and not _is_substantive(text)
+
         new_report = verify_answer(text, evidence)
         rounds.append(new_report.summary())
         # Ties keep the earlier answer: each rewrite thins the answer, and Completeness
@@ -235,6 +254,49 @@ def _verify_and_repair(
         "resolved": not best[3].blocking,
     }
     return best[0], best[1], best[2], verification
+
+
+def _repair_sentences(
+    answer: str, report: VerificationReport, evidence: dict[str, str]
+) -> str | None:
+    """Correct each flagged sentence in place, leaving the rest byte-identical.
+
+    Returns None when this cannot apply — no flagged sentence resolves to text, or the model
+    is unreachable — so the caller can fall back to a whole-answer rewrite.
+    """
+    claims = split_claims(answer)
+    by_index = {c.index: c for c in claims}
+    problems_by_claim: dict[int, list[str]] = {}
+    for p in report.blocking:
+        if p.claim_index in by_index:
+            problems_by_claim.setdefault(p.claim_index, []).append(f"[{p.kind}] {p.detail}")
+    if not problems_by_claim:
+        return None
+
+    replacements: dict[str, str] = {}
+    for index, details in problems_by_claim.items():
+        claim = by_index[index]
+        cited = "\n".join(
+            f"[{label}] {evidence.get(label, '(missing)')[:1500]}"
+            for label in claim.effective_labels
+        ) or "(this sentence cites nothing)"
+        user = (
+            f"Sentence:\n{claim.text}\n\nCited excerpt(s):\n{cited}\n\n"
+            f"Problem(s) found:\n" + "\n".join(details)
+        )
+        try:
+            fixed = chat_json(SENTENCE_REPAIR_SYSTEM, user, temperature=0.0)
+        except LLMError:
+            return None
+        replacements[claim.text] = str(fixed.get("sentence") or "").strip()
+
+    out = answer
+    for original, replacement in replacements.items():
+        out = out.replace(original, replacement)
+    # Tidy the gaps left by deleted sentences without touching surviving text.
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out or None
 
 
 def _repair(

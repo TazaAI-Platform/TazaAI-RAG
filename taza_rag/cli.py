@@ -229,6 +229,11 @@ def answer_cmd(
     verify: bool = typer.Option(
         True, "--verify/--no-verify", help="Ground-check claims and repair before returning"
     ),
+    facts: bool = typer.Option(
+        True,
+        "--facts/--no-facts",
+        help="Extract cited facts, then write the answer from that list",
+    ),
 ) -> None:
     """Optional: retrieve + generate answer (needs OPENAI_API_KEY). Quality path is `retrieve`."""
     if not settings.openai_api_key:
@@ -239,7 +244,13 @@ def answer_cmd(
         raise typer.Exit(code=2)
     try:
         result = answer_with_factiva(
-            q, top_k=top_k, days_range=days_range, raw=raw, semantic=semantic, verify=verify
+            q,
+            top_k=top_k,
+            days_range=days_range,
+            raw=raw,
+            semantic=semantic,
+            verify=verify,
+            extract_facts=facts,
         )
     except LLMError as e:
         console.print(f"[red]{e}[/red]")
@@ -272,6 +283,11 @@ def eval_a1_cmd(
     verify: bool = typer.Option(
         True, "--verify/--no-verify", help="Ground-check claims and repair before scoring"
     ),
+    facts: bool = typer.Option(
+        True,
+        "--facts/--no-facts",
+        help="Extract cited facts before writing; --no-facts is the previous one-shot path",
+    ),
 ) -> None:
     """Answer-level A1 eval: Accuracy gate + Relevance / Completeness / Clarity."""
     if not settings.openai_api_key:
@@ -288,6 +304,7 @@ def eval_a1_cmd(
         compare_baseline=compare,
         judge_model=judge_model,
         verify=verify,
+        extract_facts=facts,
     )
     console.print(f"\nJSON → {report}")
     console.print(f"Worksheet → {report.with_suffix('.md')}")
