@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     chat_model: str = "gpt-4o-mini"
+    # Writer is separate from chat_model: mini left supported facts unused and mixed
+    # figures across sources. Judge stays independent (judge_model).
+    answer_model: str = "gpt-4o"
     contextualize_model: str = "gpt-4o-mini"
     data_dir: Path = Path("./data")
     index_dir: Path = Path("./data/index")

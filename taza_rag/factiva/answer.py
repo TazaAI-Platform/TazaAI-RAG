@@ -13,6 +13,7 @@ from taza_rag.factiva.verify import (
     SENTENCE_REPAIR_SYSTEM,
     VerificationReport,
     _has_factual_content,
+    _labels_in,
     describe_problems,
     split_claims,
     verify_answer,
@@ -139,7 +140,12 @@ def answer_with_factiva(
         raw_json = generate_from_facts(query, context, evidence)
     if raw_json is None:
         user = f"Question: {query}\n\nSources:\n{context}"
-        raw_json = chat_json(ANSWER_SYSTEM, user, temperature=0.0)
+        raw_json = chat_json(
+            ANSWER_SYSTEM,
+            user,
+            model=settings.answer_model or settings.chat_model,
+            temperature=0.0,
+        )
     t2 = time.perf_counter()
 
     answer_text = str(raw_json.get("answer") or "")
@@ -160,9 +166,16 @@ def answer_with_factiva(
 
     label_to_hit = {f"c{i}": h for i, h in enumerate(selected, start=1)}
     used = []
-    for label in raw_json.get("used_citations") or []:
-        hit = label and label_to_hit.get(str(label))
+    seen: set[str] = set()
+    declared: list[str] = []
+    for raw_label in raw_json.get("used_citations") or []:
+        declared.extend(_labels_in(f"[{raw_label}]"))
+    for label in declared + _labels_in(answer_text):
+        if label in seen:
+            continue
+        hit = label_to_hit.get(label)
         if hit:
+            seen.add(label)
             used.append(hit)
 
     citations = hits_to_citations(used or selected[:3])
@@ -285,7 +298,12 @@ def _repair_sentences(
             f"Problem(s) found:\n" + "\n".join(details)
         )
         try:
-            fixed = chat_json(SENTENCE_REPAIR_SYSTEM, user, temperature=0.0)
+            fixed = chat_json(
+                SENTENCE_REPAIR_SYSTEM,
+                user,
+                model=settings.answer_model or settings.chat_model,
+                temperature=0.0,
+            )
         except LLMError:
             return None
         replacements[claim.text] = str(fixed.get("sentence") or "").strip()
@@ -320,7 +338,12 @@ def _repair(
         f"Problems found:\n{problems}{retry_note}"
     )
     try:
-        fixed: dict[str, Any] = chat_json(REPAIR_SYSTEM, user, temperature=0.0)
+        fixed: dict[str, Any] = chat_json(
+            REPAIR_SYSTEM,
+            user,
+            model=settings.answer_model or settings.chat_model,
+            temperature=0.0,
+        )
     except LLMError:
         return None
     text = str(fixed.get("answer") or "").strip()

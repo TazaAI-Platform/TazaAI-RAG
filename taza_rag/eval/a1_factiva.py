@@ -250,7 +250,7 @@ def run_a1_eval(
     summary: dict[str, Any] = {
         "config": rows[0]["config"] if rows else "factiva_quality_v2+ctx",
         "n": len(gold),
-        "generator_model": settings.chat_model,
+        "generator_model": settings.answer_model or settings.chat_model,
         "judge_model": judge_model_name(judge_model),
         "judge_model_note": "LLM judge; scores vary slightly between runs",
         **_aggregate(rows),

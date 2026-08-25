@@ -8,10 +8,12 @@ import taza_rag.factiva.facts as fmod
 from taza_rag.factiva.facts import (
     Fact,
     compose_from_facts,
+    fact_is_used,
     filter_facts,
     format_fact_list,
     generate_from_facts,
     parse_facts,
+    splice_unused_facts,
 )
 
 EVIDENCE = {
@@ -95,3 +97,50 @@ def test_empty_extraction_falls_back_so_the_one_shot_path_still_runs():
 def test_format_fact_list_carries_the_citation_the_writer_must_use():
     text = format_fact_list([Fact("Profit fell 18%.", "c1")])
     assert text == "1. Profit fell 18%. [c1]"
+
+
+def test_a_fact_is_used_when_its_figures_appear():
+    assert fact_is_used(
+        Fact("Profit was 347.33 billion yen.", "c1"),
+        "Net profit was 347.33 billion yen [c1].",
+    )
+    assert not fact_is_used(
+        Fact("The Intel stake produced an $8.2 billion valuation gain.", "c2"),
+        "Net profit was 347.33 billion yen [c1].",
+    )
+
+
+def test_dropped_facts_are_appended_with_their_citation():
+    """Completeness failed because extracted facts never reached the page."""
+    answer = "Profit was 347.33 billion yen [c1]."
+    facts = [
+        Fact("Profit was 347.33 billion yen.", "c1"),
+        Fact("The Intel stake produced an $8.2 billion valuation gain.", "c2"),
+    ]
+    out = splice_unused_facts(answer, facts)
+    assert "347.33" in out
+    assert "8.2" in out and "[c2]" in out
+
+
+def test_compose_splices_a_fact_the_writer_omitted():
+    def stub(system, user, **kwargs):
+        return {
+            "answer": "Profit was 347.33 billion yen [c1].",
+            "abstain": False,
+            "used_citations": ["c1"],
+        }
+
+    original = fmod.chat_json
+    fmod.chat_json = stub
+    try:
+        out = compose_from_facts(
+            "SoftBank",
+            [
+                Fact("Profit was 347.33 billion yen.", "c1"),
+                Fact("The Intel stake produced an $8.2 billion valuation gain.", "c2"),
+            ],
+        )
+    finally:
+        fmod.chat_json = original
+    assert "8.2" in out["answer"]
+    assert "c2" in out["used_citations"]

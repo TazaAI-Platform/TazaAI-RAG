@@ -18,8 +18,15 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from taza_rag.factiva.verify import _normalise_digits, figures
+from taza_rag.config import settings
+from taza_rag.factiva.verify import _labels_in, _normalise_digits, figures
 from taza_rag.llm import LLMError, chat_json
+
+_STOP = frozenset(
+    """about after against among because before between during from there their
+    which while would could should about after under over into than that this
+    with have been were said also more than the and for""".split()
+)
 
 EXTRACT_SYSTEM = """Extract every distinct fact in the sources that bears on the question.
 
@@ -29,7 +36,9 @@ Rules:
 - Copy figures, names, dates and counterparties exactly as written. Do not round or combine.
 - If two sources disagree, extract both facts rather than choosing.
 - Skip colour, repetition, and anything that does not help answer the question.
-- Prefer 6-14 facts. Fewer is fine when the sources are thin; do not pad.
+- Cover, when present: the headline result, every concrete figure, the cause, counterparties,
+  official or executive comment, timing, and any contrary or cautionary view.
+- Prefer 8-16 facts. Fewer is fine when the sources are thin; do not pad.
 
 Return JSON: {"facts": [{"text": string, "citation": string}]}
 """
@@ -112,9 +121,51 @@ def format_fact_list(facts: list[Fact]) -> str:
     return "\n".join(lines)
 
 
+def _answer_model() -> str:
+    return settings.answer_model or settings.chat_model
+
+
+def fact_is_used(fact: Fact, answer: str) -> bool:
+    """Did the writer actually carry this fact, or only its citation label?"""
+    haystack = _normalise_digits(answer)
+    figs = figures(fact.text)
+    if figs and all(re.search(rf"(?<!\d){re.escape(fig)}(?!\d)", haystack) for fig in figs):
+        return True
+    words = [
+        w
+        for w in re.findall(r"[a-z]{5,}", fact.text.lower())
+        if w not in _STOP
+    ]
+    if len(words) >= 2:
+        blob = answer.lower()
+        hits = sum(1 for w in words if w in blob)
+        return hits >= min(3, len(words))
+    return False
+
+
+def splice_unused_facts(answer: str, facts: list[Fact]) -> str:
+    """Append grounded facts the writer dropped. No new numbers, no new sources.
+
+    Completeness failed because extracted facts never reached the page, not because
+    retrieval missed them. This is mechanical coverage, not a second creative pass.
+    """
+    extras: list[str] = []
+    for fact in facts:
+        if fact_is_used(fact, answer):
+            continue
+        text = fact.text.rstrip(" .")
+        extras.append(f"{text} [{fact.citation}].")
+    if not extras:
+        return answer
+    return answer.rstrip() + " " + " ".join(extras)
+
+
 def extract_facts(query: str, context: str, evidence: dict[str, str]) -> list[Fact]:
     raw = chat_json(
-        EXTRACT_SYSTEM, f"Question: {query}\n\nSources:\n{context}", temperature=0.0
+        EXTRACT_SYSTEM,
+        f"Question: {query}\n\nSources:\n{context}",
+        model=_answer_model(),
+        temperature=0.0,
     )
     return filter_facts(parse_facts(raw), evidence)
 
@@ -125,19 +176,23 @@ def compose_from_facts(query: str, facts: list[Fact]) -> dict[str, Any] | None:
     raw = chat_json(
         COMPOSE_SYSTEM,
         f"Question: {query}\n\nFacts:\n{format_fact_list(facts)}",
+        model=_answer_model(),
         temperature=0.0,
     )
-    if not str(raw.get("answer") or "").strip():
+    text = str(raw.get("answer") or "").strip()
+    if not text:
         return None
-    if not raw.get("used_citations"):
-        raw["used_citations"] = [f.citation for f in facts]
+    raw["answer"] = splice_unused_facts(text, facts)
+    # Splice can add labels the writer omitted; the judge sees both the prose and
+    # this list, so they have to agree.
+    raw["used_citations"] = _labels_in(raw["answer"]) or [f.citation for f in facts]
     return raw
 
 
 def generate_from_facts(
     query: str, context: str, evidence: dict[str, str]
 ) -> dict[str, Any] | None:
-    """Extract → filter → compose. None means the caller should use the one-shot path."""
+    """Extract → filter → compose → splice unused cards. None falls back to one-shot."""
     try:
         facts = extract_facts(query, context, evidence)
     except LLMError:

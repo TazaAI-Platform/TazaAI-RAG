@@ -28,8 +28,13 @@ query → intent detection → query expansion (3 variants)
       → token-budgeted evidence pack
       → extract cited facts (drop any whose figures are not in the cited excerpt)
       → compose the answer from that list only
+      → splice any grounded fact the writer dropped
       → claim-level verification + bounded repair loop
 ```
+
+Writer is `gpt-4o` (`ANSWER_MODEL`), separate from `CHAT_MODEL` (`gpt-4o-mini`) and the
+judge (`JUDGE_MODEL`, `gpt-5`). Mini left supported facts unused and mixed figures across
+sources; a model scoring its own output inflates itself.
 
 Ranking is deliberately non-LLM: entity and topic signals, source authority, freshness,
 document-type penalties, light stemming, near-duplicate collapse. It is fast, explainable,
@@ -61,36 +66,40 @@ query out of 52 and is reported rather than explained away.
 ## 4. Answer quality — measured against the A1 rubric
 
 Dow Jones A1 implemented as specified: Accuracy as a four-part automatic-fail gate, then
-Relevance, Completeness and Clarity at 1–3. Generator `gpt-4o-mini`, judge `gpt-5` — a
-different model from the generator, because a model scoring its own output inflates itself.
+Relevance, Completeness and Clarity at 1–3. Writer `gpt-4o` (`ANSWER_MODEL`), judge `gpt-5`
+— a different model from the generator, because a model scoring its own output inflates
+itself. All 52 gold queries scored, none dropped.
 
-| | Score |
-|---|---|
-| **Accuracy** (gate: all four checks) | 0.538 |
-| ├ factual correctness | 0.596 |
-| ├ citation integrity | 0.577 |
-| ├ no hallucinations | 0.654 |
-| └ contextual integrity | 0.673 |
-| Relevance (1–3) | 2.42 |
-| Completeness (1–3) | 1.71 |
-| Clarity (1–3) | 2.88 |
-| Overall pass (gate + all dims ≥ 2) | 0.365 |
-| Correct refusal of unanswerable queries | 0.900 |
-| False refusal of answerable queries | 0.019 |
+The previous full-set run used a one-shot `gpt-4o-mini` writer (`a1_n52.json`). The shipping
+path extracts facts, composes, splices unused grounded cards, then verifies
+(`a1_gpt4o52.json`). Live corpus, so this is not a re-score of the same answers.
 
-These are the **strict** readings. A second judge scores the same answers far higher — see
-section 7 before quoting any of them.
+| | Previous (`mini`, one-shot) | **Shipping (`gpt-4o` + facts + splice)** |
+|---|---|---|
+| **Accuracy** (gate: all four checks) | 0.538 | **0.712** |
+| ├ factual correctness | 0.596 | **0.846** |
+| ├ citation integrity | 0.577 | **0.788** |
+| ├ no hallucinations | 0.654 | **0.885** |
+| └ contextual integrity | 0.673 | **0.846** |
+| Relevance (1–3) | 2.42 | 2.44 |
+| Completeness (1–3) | 1.71 | **1.79** |
+| Clarity (1–3) | **2.88** | 2.71 |
+| Overall pass (gate + all dims ≥ 2) | 0.365 | **0.519** |
+| Completeness = 1 (worse) | 17 | **13** |
+| Median words | 96 | 124 |
+| Correct refusal of unanswerable queries | 0.900 | 0.900 |
+| False refusal of answerable queries | 0.019 | 0.019 |
 
-Median latency 19.2s per verified answer, p90 30.0s.
+These are the **strict** readings. A second judge scores the same *previous* answers far
+higher — see section 7 before quoting a level. The 0.29 judge band has not been re-measured
+on the new answers.
 
-Accuracy varies more by intent than by anything I changed: `industry_scan` and
-`event_tracking` reach 0.75, while `geographic_assessment` sits at 0.25 and `risk_compliance`
-and `brand_perception` at 0.33. Top failure tag is `missing_narrative` on 41 of 52 answers —
-**Completeness, not citation integrity, is the binding constraint.**
-
-Claim verification does most of the mechanical work it promises: 118 unsupported claims
-flagged across 52 answers, 15 surviving repair, 37 of 52 answers fully clean at exit, at 1.35
-repair calls per answer.
+Accuracy by intent under the shipping path: `industry_scan` and `competitive_intel` at 1.0,
+`geographic_assessment` 0.75 (was 0.25), `risk_compliance` 0.67 (was 0.33). Still weak:
+`known_item` 0.25, `brand_perception` 0.33. Top failure tag is `missing_narrative` on 45 of
+52 — **Completeness, not citation integrity, is still the binding constraint.** Clarity
+fell; splicing leftover facts buys coverage as a list, which the judge reads as structure
+cost. Hallucination tags 16 → 6; uncited claims 18 → 8.
 
 ## 5. What I got wrong
 
@@ -115,7 +124,7 @@ included. Reporting the lower number is the point of measuring.
 These classes are now caught mechanically rather than by attention: the test runner blocks
 network access, static checks reject an exception caught without being imported, a handler
 that discards its error, or model text printed as markup, and a lint enforces the gold set's
-intent floor and rejects degenerate terms. 137 offline tests, none able to reach the network.
+intent floor and rejects degenerate terms. 140 offline tests, none able to reach the network.
 
 ## 6. What I tried that did not work
 
@@ -153,6 +162,32 @@ prompt, and it is why this path ships: it protects the automatic-fail gate. At n
 Accuracy delta is one query, but all four gates moving together is the part worth believing.
 This is not yet a 52-query number.
 
+**Stronger writer + unused-fact splice** (`evals/reports/a1_gpt4o16.json`, same 16 ids,
+same judge). Completeness failed because extracted facts never reached the page, not because
+retrieval missed them. `gpt-4o` writes from the list; any card it still drops is appended
+with its original citation — no new numbers, no new sources.
+
+| | One-shot mini | Extract + mini | Extract + `gpt-4o` + splice |
+|---|---|---|---|
+| **Accuracy** (gate) | 0.500 | 0.562 | **0.688** |
+| ├ factual / citation / no-halluc. | 0.500–0.562 | 0.688 | **0.875** |
+| ├ contextual integrity | 0.500 | 0.688 | **0.812** |
+| Overall pass | 0.125 | 0.312 | **0.500** |
+| Completeness | 1.56 | 1.50 | **1.69** |
+| Answer aspect coverage | — | 0.406 | **0.552** |
+| Median words | 101 | 94 | 118 |
+| `hallucination` tag | — | 5 | **1** |
+
+This is the first time Completeness and Accuracy moved together. The coverage prompt bought
+Completeness by asking the writer to invent more; here the extra sentences are pre-grounded
+cards. Four queries newly passed the gate and two newly failed — net +2, which at n=16 is
+still one-query noise on any single cell, but every Accuracy gate rose and Completeness
+finally moved. Confirmed on all 52 (`a1_gpt4o52.json`): Accuracy **0.712**, Completeness
+**1.79**, overall pass **0.519**. Completeness still sits below the overall-pass threshold
+of 2; `missing_narrative` is on 45 of 52. Clarity is the one dimension that fell (2.88 →
+2.71). At n=52 one query is 0.019, so the Accuracy lift versus the previous full set
+(+0.173) is nine queries, not noise — with the live-corpus caveat in section 4.
+
 ## 7. What I would not claim
 
 **The single most important caveat: the answer-level ruler is less precise than the
@@ -171,9 +206,10 @@ judge model:
 | **Overall pass** | 0.365 | 0.827 | **0.462** |
 
 The answers are byte-identical; only the grader changed. The two judges score 41 of 52
-queries differently. So **Accuracy is somewhere between 0.54 and 0.83 and I cannot narrow it
-further without human raters** — and that 0.29 band is three times the 0.096 effect I reverted
-a prompt change over.
+queries differently. That band was measured on the previous `mini` one-shot answers, not
+on `a1_gpt4o52.json`. So **a level from a single judge should not be quoted as "the"
+accuracy**, and the 0.29 gap is still three times the 0.096 effect a prompt change was
+reverted over. Human raters are what would collapse it.
 
 This does not invalidate the A/B comparisons in section 6, which hold the judge fixed across
 both arms and so measure a delta rather than a level. It does mean **no single level in
@@ -189,9 +225,9 @@ and rank computations with no model in the loop, which is why I trust them and l
 - **There is no scale story in code.** No pgvector adapter, no MCP surface. Deliberate — the
   current path retrieves per query from Factiva, so a vector store would hold nothing until an
   owned corpus (News Feed / Streams) is ingested — but it is a gap, not a solved problem.
-- **Answer quality is not production-ready** on either judge's reading. Under the strict judge
-  roughly half the answers clear the gate; under the lenient one it is five in six. Neither
-  supports shipping to a Dow Jones audience without a human in the loop.
+- **Answer quality is not production-ready.** Under the strict judge seven in ten answers
+  clear the Accuracy gate and overall pass is still half, because Completeness averages 1.79
+  against a threshold of 2. A Dow Jones audience still needs a human in the loop.
 
 ## 8. What I would do next, in order
 
@@ -200,13 +236,9 @@ and rank computations with no model in the loop, which is why I trust them and l
    effects I was tuning against, so until a human anchors it, further answer-side work is
    fitting to a ruler whose graduations are wider than the differences being chased. Twenty
    scored answers would collapse that band and make every subsequent experiment meaningful.
-2. **Re-measure extract-then-compose on all 52 queries.** The 16-query Accuracy gain is the
-   right direction; Completeness did not move, and n=16 is still one-query noise on the gate.
-3. **Try a stronger generator.** `gpt-4o-mini` is the cheapest part of the pipeline and, on
-   this evidence, the limiting one.
-4. **Ingest News Feed / Streams into pgvector** — the point at which the owned-corpus and
+2. **Ingest News Feed / Streams into pgvector** — the point at which the owned-corpus and
    scale story becomes real rather than described.
-5. **Expose retrieval as an MCP tool**, matching Taza's agent-facing boundary so retrieval
+3. **Expose retrieval as an MCP tool**, matching Taza's agent-facing boundary so retrieval
    stays a metered, callable service rather than something an agent reaches around.
 
 ## 9. Reproducing
@@ -218,9 +250,11 @@ taza-rag eval-a1 --verify --no-facts --top-k 10        # prior one-shot writer, 
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl   # refusal behaviour
 taza-rag rejudge-a1 --source <report> --judge-model gpt-4o-mini  # judge disagreement
 python scripts/validate_gold.py                        # gold labels are satisfiable
-python scripts/run_tests.py                            # 126 offline tests, no network
+python scripts/run_tests.py                            # 140 offline tests, no network
 ```
 
-Stored reports: `evals/reports/retrieval_n52.json`, `a1_n52.json`, `abstain_n10.json`, plus
-the two reverted prompt experiments (`a1_n52_coverage.json`, `a1_n52_v3.json`) so the
-negative results can be checked rather than taken on trust.
+Stored reports: `evals/reports/retrieval_n52.json`, `a1_n52.json` (previous writer),
+`a1_gpt4o52.json` (shipping writer), `abstain_n10.json`, `a1_facts16.json` /
+`a1_gpt4o16.json` (16-id ladder), plus the two reverted prompt experiments
+(`a1_n52_coverage.json`, `a1_n52_v3.json`) so the negative results can be checked rather
+than taken on trust.

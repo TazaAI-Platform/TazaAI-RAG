@@ -20,7 +20,7 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 | Local index (ablation) | Dense embeddings + BM25 (`rank-bm25`, NumPy cosine) |
 | Config / CLI | `pydantic-settings`, Typer, Rich |
 | HTTP | `httpx` |
-| Generation | OpenAI `gpt-4o-mini` (not required for core retrieve path) |
+| Generation | OpenAI `gpt-4o` writer (`ANSWER_MODEL`; not required for retrieve) |
 | A1 judge | `gpt-5` by default — deliberately not the generator, which inflated its own scores |
 | Grounding verification | Deterministic figure + citation checks, one LLM entailment call, one repair pass |
 
@@ -229,28 +229,29 @@ taza-rag eval-a1 --compare                                  # vs single-call bas
 taza-rag eval-a1 --gold evals/gold/factiva_abstain_v1.jsonl  # refusal behaviour
 ```
 
-**All 52 gold queries**, `top_k=10`, generator `gpt-4o-mini`, judge `gpt-5`, verification on.
-Every row scored; no query was dropped to an upstream failure.
+**All 52 gold queries**, `top_k=10`, judge `gpt-5`, verification on. Shipping writer is
+`gpt-4o` with extract-then-compose and unused-fact splice (`a1_gpt4o52.json`). The previous
+full set used a one-shot `gpt-4o-mini` writer (`a1_n52.json`). Every row scored; none
+dropped.
 
-| A1 criterion | 16 queries | **52 queries** |
-|--------------|-----------|----------------|
-| **Accuracy** (hard gate, all 4 checks) | 0.688 | **0.538** |
-| ├ factual correctness | 0.750 | 0.596 |
-| ├ citation integrity | 0.688 | 0.577 |
-| ├ no hallucinations | 0.750 | 0.654 |
-| └ contextual integrity | 0.812 | 0.673 |
-| Relevance (1–3) | 2.38 | 2.42 |
-| Completeness (1–3) | 1.62 | 1.71 |
-| Clarity (1–3) | 2.88 | 2.88 |
-| Overall pass (Accuracy + all dims ≥ 2) | — | 0.365 |
-| False abstention on answerable queries | — | 0.019 |
+| A1 criterion | Previous (`mini`, one-shot) | **Shipping (`gpt-4o` + facts)** |
+|--------------|----------------------------|--------------------------------|
+| **Accuracy** (hard gate, all 4 checks) | 0.538 | **0.712** |
+| ├ factual correctness | 0.596 | **0.846** |
+| ├ citation integrity | 0.577 | **0.788** |
+| ├ no hallucinations | 0.654 | **0.885** |
+| └ contextual integrity | 0.673 | **0.846** |
+| Relevance (1–3) | 2.42 | 2.44 |
+| Completeness (1–3) | 1.71 | **1.79** |
+| Clarity (1–3) | **2.88** | 2.71 |
+| Overall pass (Accuracy + all dims ≥ 2) | 0.365 | **0.519** |
+| False abstention on answerable queries | 0.019 | 0.019 |
 
-**The 16-query number was optimistic by 0.15.** This is the whole argument for expanding
-gold: the smaller set was not merely noisier, it was flattering, and the harder intents it
-omitted are where the system is weakest. Accuracy by intent ranges from 0.75 on
-`industry_scan` and `event_tracking` down to 0.25 on `geographic_assessment` and 0.33 on
-`risk_compliance` and `brand_perception` — spreads that 16 rows across five intents could
-not show at all. Median latency is 19.2s per verified answer, p90 30.0s.
+Live corpus, so this is a new retrieve+generate, not a re-score. Gold expansion still
+matters: the old 16-query mini number (0.688) was flattering. Under the shipping path,
+Accuracy by intent ranges from 1.0 on `industry_scan` and `competitive_intel` down to 0.25
+on `known_item` and 0.33 on `brand_perception`. `geographic_assessment` moved from 0.25 to
+0.75. Completeness remains the binding dimension (`missing_narrative` on 45/52).
 
 Verification does most of the mechanical work it claims: 118 unsupported claims flagged
 across 52 answers, 15 left after repair, 37 of 52 answers fully clean at exit, at 1.35
@@ -326,8 +327,22 @@ On the first 16 gold queries, against the stored one-shot answers for the same i
 | Overall pass | 0.125 | **0.312** |
 | Completeness | 1.56 | 1.50 |
 
-Accuracy moved; Completeness did not. That is why this ships and the coverage prompt did not.
-Ablate with `--no-facts`.
+Accuracy moved; Completeness did not. A follow-up on the **same 16 ids** switched the writer
+to `gpt-4o` and spliced any grounded fact the composer still dropped
+(`evals/reports/a1_gpt4o16.json`):
+
+| | One-shot mini | Extract + mini | Extract + `gpt-4o` + splice |
+|---|---|---|---|
+| Accuracy (gate) | 0.500 | 0.562 | **0.688** |
+| Overall pass | 0.125 | 0.312 | **0.500** |
+| Completeness | 1.56 | 1.50 | **1.69** |
+| Answer aspect coverage | — | 0.406 | **0.552** |
+| Median words | 101 | 94 | 118 |
+
+Completeness and Accuracy moved together for the first time — the extra sentences are
+pre-grounded cards, not prompt-invented coverage. Confirmed on all 52: Accuracy 0.712,
+Completeness 1.79, overall pass 0.519. Ablate facts with `--no-facts`; swap the writer with
+`ANSWER_MODEL`.
 
 ### Grounding verification
 
@@ -524,6 +539,8 @@ cp .env.example .env   # fill Factiva credentials
 | `FACTIVA_TOKEN_URL` | default | `https://accounts.dowjones.com/oauth2/v1/token` |
 | `FACTIVA_API_BASE` | default | `https://api.dowjones.com` |
 | `OPENAI_API_KEY` | optional | `answer`, `eval-a1`, local embeddings, `--semantic`, `--llm-context` |
+| `ANSWER_MODEL` | default `gpt-4o` | Writer for extract / compose / repair. Separate from `CHAT_MODEL` |
+| `JUDGE_MODEL` | default `gpt-5` | A1 judge. Must not be the writer |
 
 `.env` is gitignored. Never commit credentials.
 
@@ -685,15 +702,13 @@ abstention recall (0.900 correct refusal, 0.019 false refusal).
   the 0.096 effect a prompt change was reverted over. Levels from a single judge should not be
   quoted as *the* accuracy; paired A/B deltas with the judge held fixed remain valid.
   Human calibration is the highest-value next step by a wide margin.
-- **A1 Accuracy is 0.538 on the full 52-query set** under the strict judge, against 0.688 on
-  the old 16. The smaller set was flattering, not just noisy. Weakest intents:
-  `geographic_assessment` (0.25), `risk_compliance` and `brand_perception` (0.33).
-- **Completeness is the binding dimension now, not citation integrity.**
-  `missing_narrative` is the top failure tag on 41 of 52 answers, and mean Completeness is
-  1.71 against a pass threshold of 2. Two prompt-level attempts to fix it were measured and
-  reverted: coverage is purchasable, but only at a worse price in Accuracy. The material is
-  in the context, so the remaining route is per-claim verification strong enough to let an
-  answer carry more claims safely.
+- **A1 Accuracy is 0.712 on the full 52-query set** under the strict judge with the shipping
+  writer (`gpt-4o` + facts + splice), against 0.538 on the previous `gpt-4o-mini` one-shot
+  run. Weakest intents now: `known_item` (0.25), `brand_perception` (0.33).
+- **Completeness is still the binding dimension.** `missing_narrative` is the top failure
+  tag on 45 of 52 answers, mean Completeness is 1.79 against a pass threshold of 2, and
+  Clarity fell (2.88 → 2.71) because unused facts are spliced as a list. Overall pass is
+  0.519 — the Accuracy lift does not yet clear Completeness.
 - **The upstream API fails a few percent of calls.** Two of 52 queries hit
   `All 3 query variants failed` during one validation pass and both succeeded on retry, and
   a single 429 previously aborted an entire run five minutes in. Rate limits now get extra
