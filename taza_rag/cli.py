@@ -382,6 +382,17 @@ def query_local_cmd(
     console.print(result.answer, markup=False)
 
 
+@app.command("ui")
+def ui_cmd(
+    host: str = typer.Option("127.0.0.1", help="Bind address. Keep localhost unless you intend to share."),
+    port: int = typer.Option(8765, min=1, max=65535),
+) -> None:
+    """Newsroom UI: query plan, score breakdown, evidence pack, optional answer."""
+    from taza_rag.ui.server import serve
+
+    serve(host, port)
+
+
 @app.command()
 def show_config() -> None:
     data = settings.model_dump(mode="json")

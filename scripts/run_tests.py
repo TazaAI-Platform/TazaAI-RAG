@@ -68,6 +68,7 @@ MODULES = [
     "tests.test_factiva_retry",
     "tests.test_config_redaction",
     "tests.test_facts",
+    "tests.test_ui",
     "tests.test_smoke",
 ]
 

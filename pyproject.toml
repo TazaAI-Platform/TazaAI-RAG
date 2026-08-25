@@ -33,6 +33,9 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["taza_rag*"]
 
+[tool.setuptools.package-data]
+"taza_rag.ui" = ["static/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

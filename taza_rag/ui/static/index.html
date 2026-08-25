@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Taza RAG — Factiva pipeline</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="mast">
+      <div class="mast-id">
+        <p class="kicker">Taza trial · Option 1</p>
+        <h1>Factiva retrieval pipeline</h1>
+      </div>
+      <dl class="health" id="health">
+        <div><dt>Factiva</dt><dd data-k="factiva">—</dd></div>
+        <div><dt>OpenAI</dt><dd data-k="openai">—</dd></div>
+      </dl>
+    </header>
+
+    <form id="ask" autocomplete="off">
+      <label class="ask-field">
+        <span>Query</span>
+        <input
+          id="query"
+          name="query"
+          type="search"
+          required
+          maxlength="400"
+          placeholder="SoftBank Group"
+          value="SoftBank Group"
+        />
+      </label>
+      <div class="ask-tools">
+        <label class="num">
+          <span>Pack</span>
+          <input id="top-k" type="number" min="1" max="20" value="10" />
+        </label>
+        <label class="check">
+          <input id="raw" type="checkbox" />
+          Raw API order
+        </label>
+        <button type="submit" id="retrieve-btn">Retrieve</button>
+        <button type="button" id="answer-btn">Generate answer</button>
+      </div>
+    </form>
+
+    <p class="examples" id="examples"></p>
+
+    <p class="status" id="status" hidden></p>
+
+    <div class="workspace">
+      <ol class="rail" id="rail"></ol>
+      <div class="stage">
+        <section id="plan-panel" class="panel" hidden>
+          <h2>Query plan</h2>
+          <p class="lede" id="plan-lede"></p>
+          <dl class="facts" id="plan-facts"></dl>
+          <ol class="variants" id="variants"></ol>
+        </section>
+
+        <section id="funnel-panel" class="panel" hidden>
+          <h2>Funnel</h2>
+          <ul class="funnel" id="funnel"></ul>
+        </section>
+
+        <section id="pack-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Evidence pack</h2>
+            <p class="hint" id="pack-hint"></p>
+          </div>
+          <ol class="hits" id="hits"></ol>
+        </section>
+
+        <section id="answer-panel" class="panel" hidden>
+          <h2>Answer</h2>
+          <p class="config" id="answer-config"></p>
+          <div class="verify" id="verify" hidden></div>
+          <article class="answer" id="answer"></article>
+          <ol class="cites" id="cites"></ol>
+        </section>
+      </div>
+    </div>
+
+    <footer class="colophon">
+      Ranking is non-LLM. Every chunk has a marketplace cost — precision over coverage.
+      Scores are within-tier ingredients, not the composite.
+    </footer>
+    <script src="/app.js"></script>
+  </body>
+</html>

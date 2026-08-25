@@ -552,6 +552,7 @@ taza-rag factiva-auth --account rag
 
 # Primary: quality retrieval (no OpenAI)
 taza-rag retrieve "SoftBank Group"
+taza-rag ui                         # newsroom UI for the same pipeline
 taza-rag retrieve "Deutche Bank restructuring" --out /tmp/hits.json
 taza-rag retrieve "private credit market trends" --raw   # baseline ablation
 
