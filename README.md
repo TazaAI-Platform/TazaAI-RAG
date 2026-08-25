@@ -660,12 +660,15 @@ abstention recall (0.900 correct refusal, 0.019 false refusal).
 - **Latency is now measured but not optimised.** Median 18.4s per verified answer (5.6s
   retrieve, 4.5s generate, ~10s verify+repair). The verification stage is the majority of it and
   is serial by construction.
-- **Judges disagree with each other far more than expected.** `gpt-4o-mini` and `gpt-5` agree
-  on only 0.250 of queries. Any single-judge number should be read as one noisy sample, and
-  no A1 figure here has been calibrated against a human scorer.
-- **A1 Accuracy is 0.538 on the full 52-query set**, against 0.688 on the old 16. The
-  smaller set was flattering, not just noisy. Weakest intents: `geographic_assessment`
-  (0.25), `risk_compliance` and `brand_perception` (0.33).
+- **The judge band is wider than any effect measured through it.** The same 52 answers score
+  Accuracy 0.538 under `gpt-5` and 0.827 under `gpt-4o-mini`, overall pass 0.365 against
+  0.827, with 41 of 52 queries scored differently. That 0.29 band on Accuracy is three times
+  the 0.096 effect a prompt change was reverted over. Levels from a single judge should not be
+  quoted as *the* accuracy; paired A/B deltas with the judge held fixed remain valid.
+  Human calibration is the highest-value next step by a wide margin.
+- **A1 Accuracy is 0.538 on the full 52-query set** under the strict judge, against 0.688 on
+  the old 16. The smaller set was flattering, not just noisy. Weakest intents:
+  `geographic_assessment` (0.25), `risk_compliance` and `brand_perception` (0.33).
 - **Completeness is the binding dimension now, not citation integrity.**
   `missing_narrative` is the top failure tag on 41 of 52 answers, and mean Completeness is
   1.71 against a pass threshold of 2. Two prompt-level attempts to fix it were measured and

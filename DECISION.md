@@ -77,6 +77,9 @@ different model from the generator, because a model scoring its own output infla
 | Correct refusal of unanswerable queries | 0.900 |
 | False refusal of answerable queries | 0.019 |
 
+These are the **strict** readings. A second judge scores the same answers far higher — see
+section 7 before quoting any of them.
+
 Median latency 19.2s per verified answer, p90 30.0s.
 
 Accuracy varies more by intent than by anything I changed: `industry_scan` and
@@ -134,20 +137,51 @@ problem, not a wording one.
 
 ## 7. What I would not claim
 
-- **No A1 number here is calibrated against a human.** Two model judges scoring the identical
-  answers agree on 31% of queries: `gpt-4o-mini` rates overall pass at 0.875 where `gpt-5`
-  says 0.438. The judge is a larger source of variance than most changes I could make.
+**The single most important caveat: the answer-level ruler is less precise than the
+differences it is being used to measure.** The same 52 answers, re-scored changing only the
+judge model:
+
+| | judged by `gpt-5` | judged by `gpt-4o-mini` | band |
+|---|---|---|---|
+| **Accuracy** (gate) | 0.538 | 0.827 | **0.288** |
+| ├ citation integrity | 0.577 | 0.923 | 0.346 |
+| ├ factual correctness | 0.596 | 0.827 | 0.231 |
+| ├ no hallucinations | 0.654 | 0.904 | 0.250 |
+| └ contextual integrity | 0.673 | 0.827 | 0.154 |
+| Relevance | 2.42 | 2.83 | 0.404 |
+| Completeness | 1.71 | 2.00 | 0.288 |
+| **Overall pass** | 0.365 | 0.827 | **0.462** |
+
+The answers are byte-identical; only the grader changed. The two judges score 41 of 52
+queries differently. So **Accuracy is somewhere between 0.54 and 0.83 and I cannot narrow it
+further without human raters** — and that 0.29 band is three times the 0.096 effect I reverted
+a prompt change over.
+
+This does not invalidate the A/B comparisons in section 6, which hold the judge fixed across
+both arms and so measure a delta rather than a level. It does mean **no single level in
+section 4 should be quoted as "the" accuracy.** The conservative number is reported throughout
+this document because a strict judge is the safer assumption for a Dow Jones product, not
+because it is known to be the true one.
+
+Everything in section 3 is free of this problem: retrieval metrics are deterministic string
+and rank computations with no model in the loop, which is why I trust them and lead with them.
+
 - **The corpus is live**, so retrieval figures move run to run, and roughly one query in
   twenty-five fails upstream even after retries.
 - **There is no scale story in code.** No pgvector adapter, no MCP surface. Deliberate — the
   current path retrieves per query from Factiva, so a vector store would hold nothing until an
   owned corpus (News Feed / Streams) is ingested — but it is a gap, not a solved problem.
-- **Answer quality is not production-ready** at 0.538 on a hard accuracy gate.
+- **Answer quality is not production-ready** on either judge's reading. Under the strict judge
+  roughly half the answers clear the gate; under the lenient one it is five in six. Neither
+  supports shipping to a Dow Jones audience without a human in the loop.
 
 ## 8. What I would do next, in order
 
-1. **Human-calibrate the judge** on 20 answers against the A1 rubric. Until this exists, every
-   answer-level number is soft, and no amount of tuning fixes that.
+1. **Human-calibrate the judge** on 20 answers against the A1 rubric. This is first by a wide
+   margin. Section 7 shows the judge band (0.29 on Accuracy) is three times the size of the
+   effects I was tuning against, so until a human anchors it, further answer-side work is
+   fitting to a ruler whose graduations are wider than the differences being chased. Twenty
+   scored answers would collapse that band and make every subsequent experiment meaningful.
 2. **Strengthen per-claim verification** so an answer can carry more claims without exposing
    the citation gate — the only route to Completeness that the measurements have not already
    closed off.
