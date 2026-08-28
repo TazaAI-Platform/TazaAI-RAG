@@ -229,10 +229,13 @@ async function research() {
   const query = $("query").value.trim();
   if (!query) return;
   busy(true);
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.max(1, Math.round((Date.now() - started) / 1000));
+    showStatus(`Running the research agent… ${s}s. Typically 1–2 minutes — leave this tab open.`);
+  }, 1000);
   try {
-    showStatus("Planning the research…");
-    paintPlan(await post("/api/plan", { query }));
-    showStatus("Searching in parallel, judging coverage, refining what is missing…");
+    showStatus("Running the research agent… typically 1–2 minutes. Leave this tab open.");
     renderRail("rounds");
     const run = await post("/api/research", {
       query,
@@ -248,6 +251,7 @@ async function research() {
   } catch (err) {
     showStatus(err.message || String(err), true);
   } finally {
+    clearInterval(tick);
     busy(false);
   }
 }
@@ -574,6 +578,8 @@ function show(el) { el.hidden = false; }
 function hide(el) { el.hidden = true; }
 function busy(on) {
   syncButtons(on);
+  $("query").disabled = on;
+  document.body.classList.toggle("is-busy", on);
 }
 function syncButtons(on) {
   $("retrieve-btn").disabled = on;

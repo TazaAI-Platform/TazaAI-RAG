@@ -265,12 +265,15 @@ class UiHandler(BaseHTTPRequestHandler):
         self._bytes(status, "application/json; charset=utf-8", body)
 
     def _bytes(self, status: int, content_type: str, body: bytes) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 def _clamp(value: Any, lo: int, hi: int, default: int) -> int:

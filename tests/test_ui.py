@@ -135,6 +135,8 @@ def test_the_script_renders_the_usage_contract():
     assert 'metric(u.offered, "Offered")' in js
     assert "Ask the marketplace" in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert "data-package" in js
+    assert "Leave this tab open" in js
+    assert 'post("/api/research"' in js
 
 
 def test_every_element_the_script_reaches_for_exists_in_the_page():
