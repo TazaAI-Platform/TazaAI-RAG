@@ -199,6 +199,12 @@ def answer_with_factiva(
     )
 
 
+# Public aliases. The research agent reuses the grounding loop and the label mapping rather
+# than forking them, so a fix to either lands in both paths.
+def evidence_by_label(selected: list[RetrievedChunk]) -> dict[str, str]:
+    return _evidence_by_label(selected)
+
+
 def _is_substantive(text: str) -> bool:
     """Does this text actually answer, whatever flag came back with it?
 

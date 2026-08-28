@@ -7,6 +7,10 @@ Focus for this phase: **maximize retrieval quality** over Factiva / Dow Jones co
 > **Start with [`DECISION.md`](DECISION.md)** — what was built, what it measures, what I got
 > wrong and corrected, what I tried that failed, and what I would do next. This README is the
 > engineering detail behind it.
+>
+> **Option 2, the multi-step research agent, is in [`AGENT.md`](AGENT.md)** with its own
+> [appendix](docs/agent/). It builds on this retrieval stack, calling it through a tool
+> boundary rather than forking it.
 
 ## Stack
 
@@ -553,6 +557,7 @@ taza-rag factiva-auth --account rag
 # Primary: quality retrieval (no OpenAI)
 taza-rag retrieve "SoftBank Group"
 taza-rag ui                         # newsroom UI for the same pipeline
+taza-rag research "..."             # Option 2 multi-step agent — see AGENT.md
 taza-rag retrieve "Deutche Bank restructuring" --out /tmp/hits.json
 taza-rag retrieve "private credit market trends" --raw   # baseline ablation
 

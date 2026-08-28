@@ -4,6 +4,9 @@ A record of what was built, what it measures, what I got wrong, and what I would
 Every figure here comes from a stored report in `evals/reports/` and can be reproduced with
 the commands at the end.
 
+This document covers **Option 1, contextual retrieval**. The multi-step research agent built on
+top of it (Option 2) has its own short write-up in [`AGENT.md`](AGENT.md).
+
 ---
 
 ## 1. The choice

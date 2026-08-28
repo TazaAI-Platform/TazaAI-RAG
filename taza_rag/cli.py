@@ -15,6 +15,7 @@ from taza_rag.eval.run import run_eval
 from taza_rag.factiva.answer import answer_with_factiva
 from taza_rag.factiva.auth import FactivaAuth
 from taza_rag.factiva.pipeline import QualityRetriever
+from taza_rag.factiva.retrieve import FactivaRetrieveError
 from taza_rag.factiva.strategy import detect_intent
 from taza_rag.generate.answer import answer_query
 from taza_rag.index.store import HybridIndex
@@ -380,6 +381,136 @@ def query_local_cmd(
         raise typer.Exit(code=2)
     result = answer_query(HybridIndex.load(index_dir or settings.index_dir), q)
     console.print(result.answer, markup=False)
+
+
+@app.command("research")
+def research_cmd(
+    q: str = typer.Argument(..., help="Complex research question"),
+    top_k: int = typer.Option(6, min=1, max=20, help="Passages per sub-question query"),
+    max_rounds: int = typer.Option(3, min=1, max=6, help="Retrieval rounds allowed"),
+    max_chunks: int = typer.Option(40, min=4, max=200, help="Unique passage budget"),
+    max_sub: int = typer.Option(5, min=1, max=8, help="Sub-questions the plan may hold"),
+    target: float = typer.Option(0.8, help="Aspect coverage that counts as answered"),
+    verify: bool = typer.Option(True, "--verify/--no-verify", help="Ground-check and repair"),
+    llm_plan: bool = typer.Option(
+        True, "--llm-plan/--no-llm-plan", help="--no-llm-plan uses heuristic query expansion"
+    ),
+    out: Optional[Path] = typer.Option(None, help="Write the full run as JSON"),
+) -> None:
+    """Multi-step research agent: decompose, search in parallel, judge sufficiency, answer."""
+    if not settings.openai_api_key:
+        console.print(
+            "[yellow]OPENAI_API_KEY not set.[/yellow] "
+            "The agent needs it to plan, extract facts and write. Use `taza-rag retrieve` "
+            "for the key-free retrieval path."
+        )
+        raise typer.Exit(code=2)
+
+    from taza_rag.agent.loop import research
+    from taza_rag.agent.models import Budget
+    from taza_rag.agent.synthesize import conflict_note
+
+    budget = Budget(
+        max_rounds=max_rounds,
+        max_unique_chunks=max_chunks,
+        max_sub_questions=max_sub,
+        top_k_per_query=top_k,
+        target_coverage=target,
+    )
+    try:
+        result = research(q, budget=budget, verify=verify, use_llm_plan=llm_plan)
+    except (LLMError, FactivaRetrieveError) as e:
+        console.print(f"[red]{type(e).__name__}: {e}[/red]")
+        raise typer.Exit(code=3) from e
+
+    plan = result.plan
+    if plan:
+        console.print(
+            f"[bold]plan[/bold]={plan.method}  [bold]intent[/bold]={plan.intent.value}  "
+            f"[bold]entities[/bold]={plan.entities}"
+        )
+        for sub in plan.sub_questions:
+            cov = result.sub_coverage.get(sub.id)
+            cov_text = f"{cov:.2f}" if cov is not None else "n/a"
+            console.print(f"  [dim]{sub.id}[/dim] coverage={cov_text}  {escape(sub.question)}")
+            if sub.aspects:
+                console.print(f"      [dim]aspects: {escape(', '.join(sub.aspects))}[/dim]")
+
+    console.print(
+        f"\n[bold]coverage[/bold]={result.coverage:.3f}  "
+        f"[bold]stop[/bold]={result.stop_reason}  "
+        f"[bold]rounds[/bold]={len(result.rounds)}"
+    )
+    for r in result.rounds:
+        console.print(
+            f"  [dim]round {r.index}: {len(r.queries)} query/queries, "
+            f"+{r.new_chunks} new passages, +{r.new_findings} new facts, "
+            f"coverage {r.coverage:.2f} ({r.coverage_delta:+.2f})[/dim]"
+        )
+    console.print(f"[dim]conflicts: {conflict_note(result.conflicts)}[/dim]")
+    if result.gaps:
+        console.print("[yellow]not covered by the sources:[/yellow]")
+        for gap in result.gaps:
+            console.print(f"  - {escape(gap.aspect)} [dim]({gap.sub_question_id})[/dim]")
+    if result.errors:
+        console.print(f"[yellow]{len(result.errors)} step error(s):[/yellow] {result.errors[:3]}")
+
+    # markup=False: rich reads [c1] as a style tag and deletes it, which turns a correctly
+    # cited answer into an apparently uncited one on screen.
+    console.print(f"\n[bold]answer[/bold]  ({'abstained' if result.abstained else 'answered'})")
+    console.print(result.answer, markup=False)
+
+    console.print("\nCitations:")
+    for item in result.evidence:
+        if f"[{item.label}]" not in result.answer:
+            continue
+        c = item.hit.chunk
+        console.print(
+            f"- [{item.label}] {c.title} ({c.source}, {c.published_at}) {c.doc_id}",
+            markup=False,
+        )
+    console.print(f"\nCost: {result.cost.payload()}")
+    console.print(f"Latency ms: { {k: round(v) for k, v in result.latency_ms.items()} }")
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result.payload(), indent=2), encoding="utf-8")
+        console.print(f"Wrote {out}")
+
+
+@app.command("eval-research")
+def eval_research_cmd(
+    gold: Path = typer.Option(Path("evals/gold/research_v1.jsonl")),
+    report: Path = typer.Option(Path("evals/reports/research_latest.json")),
+    limit: Optional[int] = typer.Option(None, help="Only the first N questions"),
+    top_k: int = typer.Option(6, min=1, max=20),
+    max_rounds: int = typer.Option(3, min=1, max=6),
+    max_chunks: int = typer.Option(40, min=4, max=200),
+    judge: bool = typer.Option(True, "--judge/--no-judge", help="Also score A1 on the answer"),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model"),
+    verify: bool = typer.Option(True, "--verify/--no-verify"),
+) -> None:
+    """Research-agent eval: plan coverage, answer coverage, stopping calibration, cost."""
+    if not settings.openai_api_key:
+        console.print("[yellow]OPENAI_API_KEY not set.[/yellow] The agent cannot plan or write.")
+        raise typer.Exit(code=2)
+
+    from taza_rag.agent.models import Budget
+    from taza_rag.eval.research import run_research_eval
+
+    run_research_eval(
+        gold,
+        report,
+        budget=Budget(
+            max_rounds=max_rounds, max_unique_chunks=max_chunks, top_k_per_query=top_k
+        ),
+        limit=limit,
+        judge=judge,
+        judge_model=judge_model,
+        verify=verify,
+    )
+    console.print(f"\nJSON → {report}")
+    console.print(f"Worksheet → {report.with_suffix('.md')}")
 
 
 @app.command("ui")
