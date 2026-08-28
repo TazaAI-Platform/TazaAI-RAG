@@ -95,7 +95,7 @@ def test_static_bundle_is_complete():
         path = STATIC_DIR / name
         assert path.is_file(), path
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    assert "Content options" in html
+    assert "Packages" in html
     assert "Consumption" in html
     assert "/app.css" in html
     assert "/app.js" in html
@@ -114,7 +114,7 @@ def test_the_playground_hides_ranking_knobs_behind_advanced():
     assert 'id="max-chunks"' in html
     assert 'id="query-label">Task<' in html
     assert 'id="retrieve-btn" class="retrieve-only"' in html
-    assert "Get options" in html
+    assert "Ask the marketplace" in html
     # Default path does not pre-fill a ranking-lab entity query.
     assert 'value="SoftBank Group"' not in html
 
@@ -122,9 +122,9 @@ def test_the_playground_hides_ranking_knobs_behind_advanced():
 def test_the_ui_has_a_panel_for_every_stage_of_the_agent():
     """The UI exists to make the agent's decisions inspectable, so the panels are the contract."""
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    for heading in ("Consumption", "Research plan", "Rounds", "Purchases", "Source disagreements"):
+    for heading in ("Consumption", "Packages", "Research plan", "Rounds", "Purchases", "Source disagreements"):
         assert heading in html, heading
-    for element in ("research-btn", "purchase-gate", "max-rounds", "max-chunks", "gaps", "usage"):
+    for element in ("research-btn", "purchase-gate", "max-rounds", "max-chunks", "gaps", "usage", "packages"):
         assert f'id="{element}"' in html, element
 
 
@@ -133,6 +133,8 @@ def test_the_script_renders_the_usage_contract():
     for key in ("offered", "bought", "refused", "cited"):
         assert f"u.{key}" in js, key
     assert 'metric(u.offered, "Offered")' in js
+    assert "Ask the marketplace" in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert "data-package" in js
 
 
 def test_every_element_the_script_reaches_for_exists_in_the_page():
@@ -217,6 +219,23 @@ def _research_result():
         )
     )
     return result
+
+
+def test_the_query_handler_returns_packages_without_bodies():
+    from taza_rag.market import Market
+    from taza_rag.ui.server import UiHandler
+
+    from tests.test_market import POOL
+
+    handler = UiHandler.__new__(UiHandler)
+    handler.server = type("S", (), {
+        "query_fn": None,
+        "market": Market(search=lambda query, top_k: POOL),
+    })()
+    payload = handler._query({"query": "SoftBank profit"})
+    assert payload["packages"]
+    assert payload["usage"]["bought"] == 0
+    assert "SECRET_BODY_A" not in str(payload)
 
 
 def test_the_retrieve_handler_returns_usage_from_the_injected_backend():

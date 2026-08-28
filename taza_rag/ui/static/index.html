@@ -19,7 +19,7 @@
     </header>
 
     <nav class="modes" id="modes">
-      <button type="button" data-mode="retrieve" class="on">Options</button>
+      <button type="button" data-mode="retrieve" class="on">Playground</button>
       <button type="button" data-mode="research">Research</button>
     </nav>
 
@@ -40,7 +40,7 @@
           <span>Budget</span>
           <input id="max-chunks" type="number" min="4" max="200" value="40" />
         </label>
-        <button type="submit" id="retrieve-btn" class="retrieve-only">Get options</button>
+        <button type="submit" id="retrieve-btn" class="retrieve-only">Ask the marketplace</button>
         <button type="button" id="answer-btn" class="retrieve-only">Write answer</button>
         <button type="button" id="research-btn" class="agent-only">Research</button>
       </div>
@@ -80,6 +80,14 @@
             <p class="hint" id="usage-hint"></p>
           </div>
           <ul class="funnel" id="usage"></ul>
+        </section>
+
+        <section id="packages-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Packages</h2>
+            <p class="hint" id="packages-hint"></p>
+          </div>
+          <ol class="offers" id="packages"></ol>
         </section>
 
         <section id="plan-panel" class="panel" hidden>
@@ -126,7 +134,7 @@
 
         <section id="pack-panel" class="panel" hidden>
           <div class="pack-head">
-            <h2 id="pack-title">Content options</h2>
+            <h2 id="pack-title">Licensed content</h2>
             <p class="hint" id="pack-hint"></p>
           </div>
           <ol class="hits" id="hits"></ol>
@@ -144,8 +152,8 @@
     </div>
 
     <footer class="colophon">
-      Send a task. Ranking knobs stay in Advanced. Offered, bought, refused, and cited
-      are the consumption record — what this call actually used.
+      Query is free. Transact buys a package. Fetch is the only way to read a body.
+      Ranking knobs stay in Advanced.
     </footer>
     <script src="/app.js"></script>
   </body>

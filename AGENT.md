@@ -89,16 +89,16 @@ words looked like one subject. Both are fixed and both now have tests.
 
 ## Agent-facing surface
 
-The commercial boundary is MCP (`taza-rag mcp`), not a Factiva-shaped API. Three tools,
-split by what they cost: `taza_plan` is free, `taza_retrieve` bills the returned pack,
-`taza_research` is capped by `max_chunks`. Every result carries the same `usage` block —
-**offered, bought, refused, cited** — so a caller reconciles spend without trusting the
-answer. The keys do not name a corpus; Factiva is the first backend.
+The commercial boundary is MCP (`taza-rag mcp`), matching the product loop on
+app.tazalabs.ai: **`query` is free**, **`transact` pays**, **`fetch_content` is
+the only tool that returns bodies**. Packages are opaque handles labelled with a
+closed tradeoff vocab (cheapest, densest, token_constrained, most_thorough,
+balanced). Every result carries the same `usage` block — offered, bought,
+refused, cited. No LLM sits on this path; ranking is the Factiva quality stack.
+The research agent is a *client* of the loop (CLI / UI), not an MCP tool.
 
-The query playground (`taza-rag ui`) is that contract with the ranking knobs hidden.
-Send a task, get content options, see what was consumed. Pack size, rounds, raw API order
-and the purchase gate live under Advanced. Budget stays visible on research because it is
-the spend cap, not a ranking parameter.
+The query playground walks that loop: send a task, pick a package, fetch what
+you bought. Ranking knobs stay under Advanced.
 
 ## Run it
 
@@ -108,8 +108,8 @@ taza-rag research "..." --no-llm-plan          # heuristic plan, no planner call
 taza-rag research "..." --max-rounds 1         # ablate the refinement loop
 taza-rag eval-research                          # 12 questions, deterministic + A1
 taza-rag eval-research --limit 4 --no-judge     # fast deterministic-only pass
-taza-rag ui                                     # query playground (knobs under Advanced)
-taza-rag mcp                                    # stdio MCP: plan / retrieve / research
+taza-rag ui                                     # query playground (query → package → fetch)
+taza-rag mcp                                    # stdio MCP: query / transact / fetch_content
 python scripts/run_tests.py                     # offline tests, network blocked
 ```
 

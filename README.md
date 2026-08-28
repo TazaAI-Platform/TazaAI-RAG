@@ -556,8 +556,8 @@ taza-rag factiva-auth --account rag
 
 # Primary: quality retrieval (no OpenAI)
 taza-rag retrieve "SoftBank Group"
-taza-rag ui                         # query playground: task in, content options out
-taza-rag mcp                        # agent-facing tools over stdio (plan / retrieve / research)
+taza-rag ui                         # query playground: query → packages → transact → fetch
+taza-rag mcp                        # agent-facing marketplace (query / transact / fetch_content)
 taza-rag research "..."             # Option 2 multi-step agent — see AGENT.md
 taza-rag retrieve "Deutche Bank restructuring" --out /tmp/hits.json
 taza-rag retrieve "private credit market trends" --raw   # baseline ablation

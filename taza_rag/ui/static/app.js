@@ -18,12 +18,21 @@ const RESEARCH_EXAMPLES = [
   { intent: "risk", q: "Why is private credit under scrutiny, and what are the specific risks?" },
 ];
 
+const TRADEOFF = {
+  cheapest: "Cheapest",
+  densest: "Densest",
+  token_constrained: "Token-constrained",
+  most_thorough: "Most thorough",
+  balanced: "Balanced",
+  budget_constrained: "Budget-constrained",
+};
+
 const RAIL = {
   retrieve: [
-    ["plan", "Plan"],
-    ["variants", "Variants"],
+    ["query", "Query"],
+    ["packages", "Packages"],
     ["spend", "Spend"],
-    ["pack", "Options"],
+    ["pack", "Licensed"],
     ["answer", "Answer"],
   ],
   research: [
@@ -95,9 +104,9 @@ function setMode(mode) {
   $("query").placeholder = research
     ? RESEARCH_EXAMPLES[0].q
     : "How exposed is SoftBank Group to its AI bets?";
-  $("pack-title").textContent = research ? "Evidence pack" : "Content options";
+  $("pack-title").textContent = research ? "Evidence pack" : "Licensed content";
   paintExamples();
-  ["usage-panel", "plan-panel", "funnel-panel", "pack-panel", "answer-panel", "steps-panel",
+  ["usage-panel", "packages-panel", "plan-panel", "funnel-panel", "pack-panel", "answer-panel", "steps-panel",
    "rounds-panel", "ledger-panel", "conflicts-panel"].forEach((id) => hide($(id)));
   showStatus("");
   syncButtons(false);
@@ -115,21 +124,70 @@ $("research-btn").addEventListener("click", () => research());
 async function retrieve() {
   const query = $("query").value.trim();
   const top_k = Number($("top-k").value || 10);
-  const raw = $("raw").checked;
   if (!query) return;
   busy(true);
   hide($("answer-panel"));
+  hide($("pack-panel"));
   try {
-    showStatus("Planning query…");
-    const plan = await post("/api/plan", { query });
-    paintPlan(plan);
-    renderRail("funnel");
-    showStatus(raw ? "Single Factiva call…" : "Retrieving in parallel from Factiva…");
-    const run = await post("/api/retrieve", { query, top_k, raw });
-    state.run = run;
-    paintUsage(run.usage);
-    paintRun(run);
+    showStatus("Asking the marketplace…");
+    const bid = await post("/api/query", { query, top_k });
+    state.run = bid;
+    paintUsage(bid.usage);
+    paintPackages(bid);
     showStatus("");
+  } catch (err) {
+    showStatus(err.message || String(err), true);
+  } finally {
+    busy(false);
+  }
+}
+
+function paintPackages(bid) {
+  show($("packages-panel"));
+  const n = (bid.packages || []).length;
+  $("packages-hint").textContent =
+    n === 0
+      ? "no priced packages matched — query is free, nothing billed"
+      : `${n} packages · query is free · transact to buy`;
+  $("packages").innerHTML = (bid.packages || []).map(packageCard).join("");
+  $("packages").onclick = (e) => {
+    const btn = e.target.closest("[data-package]");
+    if (btn) buy(btn.dataset.package);
+  };
+  renderRail("packages");
+}
+
+function packageCard(p) {
+  const s = p.summary_stats || {};
+  const price = p.price || {};
+  return `<li class="offer">
+    <div>
+      <h3>${escapeHtml(TRADEOFF[p.tradeoff_label] || p.tradeoff_label)}</h3>
+      <p class="meta">${s.document_count ?? "—"} docs · ${s.chunk_count ?? "—"} chunks ·
+        ${(s.token_count ?? 0).toLocaleString()} tokens</p>
+    </div>
+    <div class="offer-buy">
+      <span class="price">${price.amount ?? "—"} ${escapeHtml(price.unit || "chunks")}</span>
+      <button type="button" data-package="${escapeAttr(p.package_id)}">Buy</button>
+    </div>
+  </li>`;
+}
+
+async function buy(packageId) {
+  if (!packageId) return;
+  busy(true);
+  try {
+    showStatus("Transacting…");
+    const grant = await post("/api/transact", { package_id: packageId });
+    showStatus("Fetching licensed content…");
+    const fetched = await post("/api/fetch", { grant_id: grant.grant_id });
+    paintUsage(fetched.usage);
+    paintHits(fetched.items || []);
+    $("pack-title").textContent = "Licensed content";
+    $("pack-hint").textContent =
+      `${(fetched.items || []).length} items under the grant · bodies only after transact`;
+    showStatus("");
+    renderRail("pack");
   } catch (err) {
     showStatus(err.message || String(err), true);
   } finally {

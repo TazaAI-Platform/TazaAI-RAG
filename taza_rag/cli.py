@@ -535,7 +535,7 @@ def eval_research_cmd(
 
 @app.command("mcp")
 def mcp_cmd() -> None:
-    """Serve retrieval and research as MCP tools over stdio (agent-facing boundary)."""
+    """Serve marketplace MCP tools over stdio (query / transact / fetch_content)."""
     from taza_rag.mcp_server import serve
 
     # No console output: stdout is the protocol stream, and a stray line corrupts it.
@@ -547,7 +547,7 @@ def ui_cmd(
     host: str = typer.Option("127.0.0.1", help="Bind address. Keep localhost unless you intend to share."),
     port: int = typer.Option(8765, min=1, max=65535),
 ) -> None:
-    """Query playground: send a task, see what was offered, bought, and cited."""
+    """Query playground: ask the marketplace, pick a package, fetch licensed content."""
     from taza_rag.ui.server import serve
 
     serve(host, port)
