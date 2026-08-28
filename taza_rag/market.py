@@ -54,6 +54,21 @@ def _tokens(hit: RetrievedChunk) -> int:
     return max(1, len(hit.chunk.text or "") // 4)
 
 
+def preview_of(hit: RetrievedChunk) -> dict[str, Any]:
+    """Catalog row a buyer can see before paying: metadata, never the body."""
+    c = hit.chunk
+    return {
+        "title": c.title,
+        "source": c.source,
+        "published_at": c.published_at,
+        "doc_id": c.doc_id,
+        "score": round(float(hit.score), 3),
+        "token_count": _tokens(hit),
+        "authority": round(float(hit.scores.get("authority", 1.0)), 3),
+        "freshness": round(float(hit.scores.get("freshness", 1.0)), 3),
+    }
+
+
 def _density(hit: RetrievedChunk) -> float:
     return float(hit.score) / _tokens(hit)
 
@@ -73,8 +88,10 @@ class Package:
     mean_relevance: float
     recommended_read_count: int
 
-    def offer(self) -> dict[str, Any]:
-        """What a caller sees before paying: a labelled quote, not the bodies."""
+    def offer(self, hits: list[RetrievedChunk] | None = None) -> dict[str, Any]:
+        """What a caller sees before paying: a labelled quote plus catalog, not bodies."""
+        by_id = {h.chunk.chunk_id: h for h in hits or []}
+        contents = [preview_of(by_id[cid]) for cid in self.chunk_ids if cid in by_id]
         return {
             "package_id": self.package_id,
             "tradeoff_label": self.tradeoff_label,
@@ -86,6 +103,7 @@ class Package:
                 "mean_relevance": round(self.mean_relevance, 3),
             },
             "recommended_read_count": self.recommended_read_count,
+            "contents": contents,
         }
 
 
@@ -191,11 +209,12 @@ class Market:
         top_k: int = 10,
         token_budget: int | None = None,
         max_packages_returned: int = 5,
+        intent: Any = None,
     ) -> dict[str, Any]:
         q = (text_query or "").strip()
         if not q:
             raise MarketError("text_query is required")
-        hits = list(self._run_search(q, top_k=top_k))
+        hits = list(self._run_search(q, top_k=top_k, intent=intent))
         packages = assemble_packages(hits, token_budget=token_budget)[: max(1, max_packages_returned)]
         bid = Bid(
             bid_id=str(uuid.uuid4()),
@@ -216,7 +235,7 @@ class Market:
         return {
             "bid_id": bid.bid_id,
             "bid_expires_at": bid.expires_at.isoformat(),
-            "packages": [p.offer() for p in packages],
+            "packages": [p.offer(hits) for p in packages],
             "related": related,
             "usage": usage_payload(
                 offered=len(hits),
@@ -332,9 +351,14 @@ class Market:
             "usage": usage_payload(offered=offered, bought=0, refused=offered, retrieval_calls=1),
         }
 
-    def _run_search(self, query: str, *, top_k: int) -> list[RetrievedChunk]:
+    def _run_search(
+        self, query: str, *, top_k: int, intent: Any = None
+    ) -> list[RetrievedChunk]:
         if self._search is not None:
-            return self._search(query, top_k=top_k)
+            try:
+                return list(self._search(query, top_k=top_k, intent=intent))
+            except TypeError:
+                return list(self._search(query, top_k=top_k))
         from taza_rag.factiva.pipeline import QualityRetriever
 
-        return QualityRetriever().retrieve(query, top_k=top_k).hits
+        return QualityRetriever().retrieve(query, top_k=top_k, intent=intent).hits

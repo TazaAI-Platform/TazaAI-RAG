@@ -88,8 +88,6 @@ All four were found by running the thing, which is the argument for building the
    cost is known; its benefit is not yet quantified.
 4. **Use dependency results to rewrite dependent queries**, closing the gap above.
 5. **Price the budget in currency** rather than chunks, and let the stopping rule take an
-   expected-value decision: buy the next passage only when it is likely to move an uncovered
-   aspect. That is the "value before access" problem, and this loop's per-round record of
-   spend against coverage gain is the dataset it would learn from.
-6. **Expose the agent as an MCP tool** so retrieval and research are metered, callable services
-   at Taza's agent-facing boundary.
+   expected-value decision: buy the next package only when it is likely to move an uncovered
+   aspect. The agent already shops labelled packages through the marketplace book; the
+   remaining gap is a rate card, not a missing buy path.

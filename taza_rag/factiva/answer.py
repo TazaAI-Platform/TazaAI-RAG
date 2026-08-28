@@ -127,8 +127,29 @@ def answer_with_factiva(
         used_config = config_name or run.config
     t1 = time.perf_counter()
 
+    return answer_from_hits(
+        query,
+        hits,
+        config_name=used_config,
+        verify=verify,
+        extract_facts=extract_facts,
+        retrieve_ms=(t1 - t0) * 1000,
+    )
+
+
+def answer_from_hits(
+    query: str,
+    hits: list[RetrievedChunk],
+    *,
+    config_name: str = "licensed",
+    verify: bool = True,
+    extract_facts: bool | None = None,
+    retrieve_ms: float = 0.0,
+) -> AnswerResult:
+    """Write from already-licensed hits. Does not retrieve."""
+    t1 = time.perf_counter()
     if not hits:
-        return _abstain(query, used_config, (t1 - t0) * 1000)
+        return _abstain(query, config_name, retrieve_ms)
 
     context, selected = _pack_context(
         hits, settings.answer_max_chunks, settings.answer_context_tokens
@@ -188,12 +209,12 @@ def answer_with_factiva(
         abstained=abstained,
         verification=verification,
         latency_ms={
-            "retrieve": (t1 - t0) * 1000,
+            "retrieve": retrieve_ms,
             "generate": (t2 - t1) * 1000,
             "verify": (t3 - t2) * 1000,
-            "total": (t3 - t0) * 1000,
+            "total": retrieve_ms + (t3 - t1) * 1000,
         },
-        config_name=used_config
+        config_name=config_name
         + ("+facts" if use_facts else "")
         + ("+verified" if verify else ""),
     )

@@ -6,7 +6,7 @@ from typing import Any
 
 from taza_rag.factiva.pipeline import RetrievalRun
 from taza_rag.factiva.strategy import default_days_range, detect_intent, expand_queries, normalize_query
-from taza_rag.models import AnswerResult, RetrievedChunk, SearchIntent
+from taza_rag.models import AnswerResult, Chunk, RetrievedChunk, SearchIntent
 from taza_rag.retrieve.features import build_query_plan
 from taza_rag.retrieve.quality import TIER_BODY, TIER_ENTITY_ONLY, TIER_HEADLINE, TIER_OFF_ENTITY
 
@@ -126,6 +126,31 @@ def plan_payload(query: str, *, max_variants: int = 3) -> dict[str, Any]:
         "variants": expand_queries(q, intent, max_variants=max_variants),
         "days_range": default_days_range(intent),
     }
+
+
+def hit_from_payload(item: dict[str, Any]) -> RetrievedChunk:
+    """Rebuild a hit from a fetch_content item. Inverse of hit_payload."""
+    passage = item.get("passage") or {}
+    try:
+        index = int(passage.get("index") or 1) - 1
+    except (TypeError, ValueError):
+        index = 0
+    return RetrievedChunk(
+        chunk=Chunk(
+            chunk_id=str(item.get("chunk_id") or ""),
+            doc_id=str(item.get("doc_id") or ""),
+            text=str(item.get("text") or ""),
+            title=str(item.get("title") or ""),
+            source=str(item.get("source") or ""),
+            published_at=item.get("published_at"),
+            url=item.get("url"),
+            chunk_index=max(0, index),
+            metadata={"doc_kind": item.get("kind") or "article"},
+        ),
+        score=float(item.get("score") or 0.0),
+        rank=int(item.get("rank") or 0),
+        scores={k: float(v) for k, v in (item.get("scores") or {}).items()},
+    )
 
 
 def hit_payload(hit: RetrievedChunk) -> dict[str, Any]:

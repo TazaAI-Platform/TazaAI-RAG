@@ -95,10 +95,9 @@ the only tool that returns bodies**. Packages are opaque handles labelled with a
 closed tradeoff vocab (cheapest, densest, token_constrained, most_thorough,
 balanced). Every result carries the same `usage` block — offered, bought,
 refused, cited. No LLM sits on this path; ranking is the Factiva quality stack.
-The research agent is a *client* of the loop (CLI / UI), not an MCP tool.
-
-The query playground walks that loop: send a task, pick a package, fetch what
-you bought. Ranking knobs stay under Advanced.
+The research agent is a *client* of the loop (CLI / UI), not an MCP tool:
+it calls `query`, picks a labelled package from the catalog, `transact`s, and only then
+reads bodies through `fetch_content`. The query playground walks the same loop.
 
 ## Run it
 

@@ -44,7 +44,7 @@ const RAIL = {
   ],
 };
 
-const state = { legend: { scores: [], tiers: [] }, run: null, openai: false, mode: "retrieve" };
+const state = { legend: { scores: [], tiers: [] }, run: null, openai: false, mode: "retrieve", grantId: "" };
 
 const $ = (id) => document.getElementById(id);
 
@@ -93,6 +93,7 @@ function paintExamples() {
 function setMode(mode) {
   state.mode = mode === "research" ? "research" : "retrieve";
   state.run = null;
+  state.grantId = "";
   document.body.className = `mode-${state.mode}`;
   document.querySelectorAll("#modes button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === state.mode);
@@ -132,6 +133,7 @@ async function retrieve() {
     showStatus("Asking the marketplace…");
     const bid = await post("/api/query", { query, top_k });
     state.run = bid;
+    state.grantId = "";
     paintUsage(bid.usage);
     paintPackages(bid);
     showStatus("");
@@ -160,11 +162,16 @@ function paintPackages(bid) {
 function packageCard(p) {
   const s = p.summary_stats || {};
   const price = p.price || {};
+  const titles = (p.contents || [])
+    .map((c) => c.title)
+    .filter(Boolean)
+    .slice(0, 4);
   return `<li class="offer">
     <div>
       <h3>${escapeHtml(TRADEOFF[p.tradeoff_label] || p.tradeoff_label)}</h3>
       <p class="meta">${s.document_count ?? "—"} docs · ${s.chunk_count ?? "—"} chunks ·
         ${(s.token_count ?? 0).toLocaleString()} tokens</p>
+      ${titles.length ? `<p class="catalog">${titles.map(escapeHtml).join(" · ")}</p>` : ""}
     </div>
     <div class="offer-buy">
       <span class="price">${price.amount ?? "—"} ${escapeHtml(price.unit || "chunks")}</span>
@@ -179,6 +186,7 @@ async function buy(packageId) {
   try {
     showStatus("Transacting…");
     const grant = await post("/api/transact", { package_id: packageId });
+    state.grantId = grant.grant_id;
     showStatus("Fetching licensed content…");
     const fetched = await post("/api/fetch", { grant_id: grant.grant_id });
     paintUsage(fetched.usage);
@@ -197,22 +205,16 @@ async function buy(packageId) {
 
 async function answer() {
   const query = $("query").value.trim();
-  const top_k = Number($("top-k").value || 10);
-  const raw = $("raw").checked;
   if (!query) return;
+  if (!state.grantId) {
+    showStatus("Buy a package first. The answer is written from licensed content, not a new retrieve.", true);
+    return;
+  }
   busy(true);
   try {
-    if (!state.run) {
-      showStatus("Planning query…");
-      paintPlan(await post("/api/plan", { query }));
-    }
-    showStatus("Retrieving, extracting facts, composing, verifying…");
+    showStatus("Writing from licensed content…");
     renderRail("answer");
-    const payload = await post("/api/answer", { query, top_k, raw });
-    if (!state.run) {
-      paintPlan(await post("/api/plan", { query }));
-      paintHits(payload.hits || []);
-    }
+    const payload = await post("/api/answer", { query, grant_id: state.grantId });
     paintUsage(payload.usage);
     paintAnswer(payload);
     showStatus("");

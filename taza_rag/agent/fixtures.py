@@ -33,6 +33,7 @@ class FixtureSearch:
     docs: list[FixtureDoc]
     calls: list[str] = field(default_factory=list)
     fail_on: set[str] = field(default_factory=set)
+    settles_purchase: bool = False
 
     def search(
         self, query: str, *, top_k: int, intent: SearchIntent | None = None

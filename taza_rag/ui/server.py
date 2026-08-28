@@ -20,6 +20,7 @@ from taza_rag.ui.serialize import (
     TIER_LABELS,
     answer_payload,
     health_payload,
+    hit_from_payload,
     plan_payload,
     research_payload,
     run_payload,
@@ -119,7 +120,15 @@ class UiHandler(BaseHTTPRequestHandler):
                 self._json(200, self._retrieve(query, top_k=top_k, raw=raw))
                 return
             if path == "/api/answer":
-                self._json(200, self._answer(query, top_k=top_k, raw=raw))
+                self._json(
+                    200,
+                    self._answer(
+                        query,
+                        top_k=top_k,
+                        raw=raw,
+                        grant_id=str(body.get("grant_id") or "").strip(),
+                    ),
+                )
                 return
             if path == "/api/research":
                 self._json(200, self._research(query, body))
@@ -184,8 +193,26 @@ class UiHandler(BaseHTTPRequestHandler):
         run = QualityRetriever().retrieve(query, top_k=top_k)
         return run_payload(run)
 
-    def _answer(self, query: str, *, top_k: int, raw: bool) -> dict[str, Any]:
+    def _answer(
+        self, query: str, *, top_k: int, raw: bool, grant_id: str = ""
+    ) -> dict[str, Any]:
         answer = getattr(self.server, "answer_fn", None)
+        if grant_id:
+            from taza_rag.factiva.answer import answer_from_hits
+
+            fetched = self._market().fetch_content(grant_id)
+            hits = [hit_from_payload(item) for item in fetched.get("items") or []]
+            write = getattr(self.server, "write_fn", None)
+            if write:
+                return write(query, hits)
+            if not settings.openai_api_key:
+                raise LLMError("OPENAI_API_KEY is not set. Retrieve still works without it.")
+            result = answer_from_hits(query, hits, config_name="licensed_grant")
+            payload = answer_payload(result)
+            payload["usage"] = fetched.get("usage") or payload["usage"]
+            payload["usage"]["cited"] = len(payload.get("citations") or [])
+            payload["usage"]["llm_calls"] = 1
+            return payload
         if answer:
             return answer(query, top_k=top_k, raw=raw)
         if not settings.openai_api_key:
@@ -200,6 +227,7 @@ class UiHandler(BaseHTTPRequestHandler):
         if not settings.openai_api_key:
             raise LLMError("OPENAI_API_KEY is not set. The agent cannot plan or write without it.")
 
+        from taza_rag.agent.gather import MarketBackend
         from taza_rag.agent.loop import research as run_research
         from taza_rag.agent.models import Budget
 
@@ -212,6 +240,7 @@ class UiHandler(BaseHTTPRequestHandler):
         )
         result = run_research(
             query,
+            backend=MarketBackend(market=self._market()),
             budget=budget,
             verify=bool(body.get("verify", True)),
             use_llm_plan=bool(body.get("llm_plan", True)),

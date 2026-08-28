@@ -25,13 +25,19 @@ stop*; the backend decides *how to rank*. Two consequences:
 
 | Backend | Use |
 |---|---|
-| `FactivaSearch` | Live. Wraps `QualityRetriever`, one instance shared across threads so the OAuth exchange happens once. |
+| `FactivaSearch` | Live ranking. Wraps `QualityRetriever`, one instance shared across threads so the OAuth exchange happens once. Used as the search function *inside* the market, not as the agent's door. |
+| `MarketBackend` | Live agent door. `query` is free; the purchase gate scores package catalogs (titles, sources, scores — no bodies); `transact` pays; `fetch_content` is the only path that returns text. Default for CLI and UI. |
 | `FixtureSearch` | Deterministic in-memory corpus for tests and offline regression. Whole-term overlap with a title bonus — monotonic in relevance, not an imitation of the ranker. |
 
 ## Parallelism and failure isolation
 
-`gather()` issues one wave concurrently through a bounded `ThreadPoolExecutor`. Note there
-are now **two levels** of parallelism: the agent fans out across sub-questions, and
+`gather()` issues one wave concurrently through a bounded `ThreadPoolExecutor`. On
+`MarketBackend` the wave **queries in parallel, then picks packages against one shared
+budget, then fetches** — so two sub-questions cannot each buy a thorough pack and
+overshoot the passage cap. Ranking backends that return unpaid hits still search first
+and gate afterwards.
+
+Note there are now **two levels** of parallelism: the agent fans out across sub-questions, and
 `QualityRetriever` already fans out across query variants inside each call.
 
 A failing step is recorded in `RoundRecord.failed_queries` and `ResearchResult.errors`, and

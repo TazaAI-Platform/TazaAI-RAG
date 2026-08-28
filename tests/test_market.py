@@ -62,6 +62,11 @@ def test_query_is_free_and_does_not_reveal_bodies():
         assert offer["tradeoff_label"]
         assert offer["package_id"]
         assert "chunk_ids" not in offer
+        assert offer["contents"]
+        for row in offer["contents"]:
+            assert "text" not in row
+            assert "chunk_id" not in row
+            assert row["title"]
 
 
 def test_transact_then_fetch_is_the_only_way_to_read_a_body():

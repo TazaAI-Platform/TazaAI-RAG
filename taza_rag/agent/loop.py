@@ -21,7 +21,7 @@ import time
 from typing import Any
 
 from taza_rag.agent.conflict import detect_conflicts
-from taza_rag.agent.gather import EvidencePool, FactivaSearch, SearchBackend, gather
+from taza_rag.agent.gather import EvidencePool, MarketBackend, SearchBackend, gather
 from taza_rag.agent.models import (
     Budget,
     Cost,
@@ -32,7 +32,7 @@ from taza_rag.agent.models import (
     SubQuestion,
 )
 from taza_rag.agent.plan import execution_order, make_plan
-from taza_rag.agent.purchase import select
+from taza_rag.agent.purchase import PurchaseDecision, select
 from taza_rag.agent.sufficiency import assess
 from taza_rag.agent.synthesize import compose, extract_findings
 from taza_rag.config import settings
@@ -65,7 +65,7 @@ def research(
         cost.llm_calls += 1
     t_plan = time.perf_counter()
 
-    backend = backend or FactivaSearch()
+    backend = backend or MarketBackend()
     pool = EvidencePool()
     findings: list[Finding] = []
     issued: set[str] = set()
@@ -78,26 +78,29 @@ def research(
     round0 = RoundRecord(index=0)
     for wave in execution_order(result.plan):
         tasks = [(sub, sub.question) for sub in wave]
-        outcome = gather(backend, tasks, top_k=budget.top_k_per_query, workers=workers)
+        outcome = gather(
+            backend,
+            tasks,
+            top_k=budget.top_k_per_query,
+            workers=workers,
+            wanted=open_aspects,
+            budget_left=max(0, budget.max_unique_chunks - len(pool)),
+            purchase_gate=budget.purchase_gate,
+            min_value=budget.min_purchase_value,
+            pooled_doc_ids={i.doc_id for i in pool.items},
+        )
         cost.retrieval_calls += len(tasks)
         round0.queries.extend(q for _s, q in tasks)
         issued.update(q for _s, q in tasks)
         round0.chunks_returned += outcome.chunks_returned
         round0.latency_ms += outcome.latency_ms
-
-        candidates: list[tuple[str, Any]] = []
         for task in outcome.results:
             if task.error:
                 round0.failed_queries.append(task.query)
                 result.errors.append(task.error)
-                continue
-            sub = result.plan.by_id(task.sub_question_id)
-            if sub is None:
-                continue
-            candidates.extend((sub.id, hit) for hit in task.hits)
 
-        round0.new_chunks += _buy(
-            candidates, pool, result, budget, cost, wanted=open_aspects, round_index=0
+        round0.new_chunks += _admit(
+            outcome, pool, result, budget, cost, wanted=open_aspects, round_index=0
         )
 
     cost.chunks_returned += round0.chunks_returned
@@ -128,7 +131,17 @@ def research(
         previous_coverage = verdict.coverage
         record = RoundRecord(index=len(result.rounds))
         tasks = verdict.refinements
-        outcome = gather(backend, tasks, top_k=budget.top_k_per_query, workers=workers)
+        outcome = gather(
+            backend,
+            tasks,
+            top_k=budget.top_k_per_query,
+            workers=workers,
+            wanted=[g.aspect for g in verdict.gaps],
+            budget_left=max(0, budget.max_unique_chunks - len(pool)),
+            purchase_gate=budget.purchase_gate,
+            min_value=budget.min_purchase_value,
+            pooled_doc_ids={i.doc_id for i in pool.items},
+        )
         cost.retrieval_calls += len(tasks)
         record.queries = [q for _s, q in tasks]
         issued.update(record.queries)
@@ -136,22 +149,17 @@ def research(
         record.latency_ms = outcome.latency_ms
 
         touched: dict[str, SubQuestion] = {}
-        candidates = []
         for task in outcome.results:
             if task.error:
                 record.failed_queries.append(task.query)
                 result.errors.append(task.error)
                 continue
             sub = result.plan.by_id(task.sub_question_id)
-            if sub is None:
-                continue
-            candidates.extend((sub.id, hit) for hit in task.hits)
-            touched[sub.id] = sub
+            if sub is not None:
+                touched[sub.id] = sub
 
-        # Later rounds exist only to close gaps, so the gate scores candidates against the
-        # aspects still missing rather than against the whole plan.
-        record.new_chunks += _buy(
-            candidates,
+        record.new_chunks += _admit(
+            outcome,
             pool,
             result,
             budget,
@@ -229,6 +237,70 @@ def research(
     result.config_name = f"research_v1+{result.plan.method}" + ("+verified" if verify else "")
     result.latency_ms = _timings(t_start, t_plan, t_gather, t_assess, time.perf_counter())
     return result
+
+
+def _admit(
+    outcome: Any,
+    pool: EvidencePool,
+    result: ResearchResult,
+    budget: Budget,
+    cost: Cost,
+    *,
+    wanted: list[str],
+    round_index: int,
+) -> int:
+    """Pool what this wave licensed or, for unpaid backends, run the passage gate."""
+    licensed = any(getattr(task, "licensed", False) for task in outcome.results)
+    if licensed:
+        return _admit_licensed(outcome, pool, result, cost, round_index=round_index)
+
+    candidates: list[tuple[str, Any]] = []
+    for task in outcome.results:
+        if task.error:
+            continue
+        candidates.extend((task.sub_question_id, hit) for hit in task.hits)
+    return _buy(candidates, pool, result, budget, cost, wanted=wanted, round_index=round_index)
+
+
+def _admit_licensed(
+    outcome: Any,
+    pool: EvidencePool,
+    result: ResearchResult,
+    cost: Cost,
+    *,
+    round_index: int,
+) -> int:
+    """Hits already came from fetch_content; do not score them a second time."""
+    new = 0
+    for task in outcome.results:
+        if task.error:
+            continue
+        cost.candidates_rejected += int(task.refused or 0)
+        for hit in task.hits:
+            added = pool.add([hit], task.sub_question_id, round_index)
+            new += len(added)
+            labels = {pool.key(item.hit): item.label for item in pool.items}
+            already = not added
+            result.ledger.record(
+                PurchaseDecision(
+                    doc_id=hit.chunk.doc_id,
+                    chunk_id=hit.chunk.chunk_id,
+                    title=hit.chunk.title,
+                    source=hit.chunk.source,
+                    published_at=hit.chunk.published_at,
+                    sub_question_id=task.sub_question_id,
+                    round_index=round_index,
+                    value=0.0 if already else 1.0,
+                    admitted=True,
+                    reason=(
+                        "already held; no additional charge"
+                        if already
+                        else f"bought {task.tradeoff_label or 'package'}"
+                    ),
+                    label=labels.get(pool.key(hit), ""),
+                )
+            )
+    return new
 
 
 def _buy(

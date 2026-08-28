@@ -4,9 +4,10 @@ The retrieval pipeline answers one question well. This package answers a questio
 single retrieval can cover: it decomposes the ask, searches the corpus in parallel, decides
 whether what came back is enough, and only then writes.
 
-Retrieval is treated as a metered tool behind `SearchBackend`, not as code the agent owns.
-That keeps the agent's decisions (what to ask, when to stop, what to trust) separable from
-the ranking work, and it is what makes the loop testable without the network.
+Retrieval is treated as a metered marketplace behind `MarketBackend`, not as code the
+agent owns. The agent decides what to ask and which labelled package to buy; bodies
+arrive only after `transact`. Fixture tests still inject `FixtureSearch` so the loop
+is verifiable without the network.
 """
 
 from taza_rag.agent.models import (

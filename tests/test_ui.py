@@ -221,6 +221,47 @@ def _research_result():
     return result
 
 
+def test_the_answer_handler_writes_from_a_grant_not_a_new_retrieve():
+    from taza_rag.market import Market
+    from taza_rag.ui.serialize import usage_payload
+    from taza_rag.ui.server import UiHandler
+
+    from tests.test_market import POOL
+
+    market = Market(search=lambda query, top_k: POOL)
+    bid = market.query("SoftBank profit")
+    cheapest = next(p for p in bid["packages"] if p["tradeoff_label"] == "cheapest")
+    grant = market.transact(cheapest["package_id"])
+    seen: list = []
+
+    handler = UiHandler.__new__(UiHandler)
+    handler.server = type(
+        "S",
+        (),
+        {
+            "market": market,
+            "answer_fn": staticmethod(
+                lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not retrieve"))
+            ),
+            "write_fn": staticmethod(
+                lambda query, hits: seen.append(hits)
+                or {"answer": "ok", "hits": [], "usage": usage_payload()}
+            ),
+            "query_fn": None,
+        },
+    )()
+    payload = handler._answer("SoftBank profit", top_k=10, raw=False, grant_id=grant["grant_id"])
+    assert payload["answer"] == "ok"
+    assert seen and "SECRET_BODY_C" in seen[0][0].chunk.text
+
+
+def test_the_script_writes_from_the_grant_and_shows_package_catalogs():
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "grant_id: state.grantId" in js
+    assert "Buy a package first" in js
+    assert "p.contents" in js
+
+
 def test_the_query_handler_returns_packages_without_bodies():
     from taza_rag.market import Market
     from taza_rag.ui.server import UiHandler
@@ -236,6 +277,7 @@ def test_the_query_handler_returns_packages_without_bodies():
     assert payload["packages"]
     assert payload["usage"]["bought"] == 0
     assert "SECRET_BODY_A" not in str(payload)
+    assert payload["packages"][0]["contents"]
 
 
 def test_the_retrieve_handler_returns_usage_from_the_injected_backend():

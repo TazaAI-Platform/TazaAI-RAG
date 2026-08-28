@@ -215,3 +215,80 @@ def test_a_passage_already_held_is_not_counted_as_a_purchase():
     assert payload["charged"] == 0
     assert payload["rejected"] == 1
     assert payload["admission_rate"] == 0.0
+
+
+def _offer(label, contents, price):
+    return {
+        "package_id": label,
+        "tradeoff_label": label,
+        "price": {"amount": price, "unit": "chunks"},
+        "contents": contents,
+    }
+
+
+def test_choose_package_buys_the_catalog_that_targets_the_gap():
+    from taza_rag.agent.purchase import choose_package
+
+    bond = {
+        "title": "SoftBank plans record retail bond issuance",
+        "source": "The Wall Street Journal",
+        "doc_id": "d1",
+        "score": 4.0,
+        "authority": 1.12,
+        "freshness": 1.0,
+    }
+    junk = {
+        "title": "Tokyo stocks close mixed as investors await data",
+        "source": "Dow Jones",
+        "doc_id": "d2",
+        "score": 3.0,
+        "authority": 1.0,
+        "freshness": 1.0,
+    }
+    picked = choose_package(
+        [
+            _offer("most_thorough", [bond, junk], 2),
+            _offer("cheapest", [junk], 1),
+        ],
+        wanted=["record retail bond issuance"],
+        budget_left=10,
+    )
+    assert picked is not None
+    assert picked["package_id"] == "most_thorough"
+
+
+def test_choose_package_walks_away_when_nothing_is_worth_buying():
+    from taza_rag.agent.purchase import choose_package
+
+    junk = {
+        "title": "Tokyo stocks close mixed as investors await data",
+        "source": "Dow Jones",
+        "doc_id": "d2",
+        "score": 3.0,
+    }
+    assert (
+        choose_package(
+            [_offer("cheapest", [junk], 1)],
+            wanted=["record retail bond issuance"],
+            budget_left=10,
+        )
+        is None
+    )
+
+
+def test_choose_package_will_not_overshoot_the_passage_budget():
+    from taza_rag.agent.purchase import choose_package
+
+    bond = {
+        "title": "SoftBank plans record retail bond issuance",
+        "source": "WSJ",
+        "doc_id": "d1",
+        "score": 4.0,
+    }
+    picked = choose_package(
+        [_offer("most_thorough", [bond, bond, bond], 3), _offer("cheapest", [bond], 1)],
+        wanted=["record retail bond issuance"],
+        budget_left=1,
+    )
+    assert picked is not None
+    assert picked["package_id"] == "cheapest"

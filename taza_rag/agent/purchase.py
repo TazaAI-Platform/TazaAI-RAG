@@ -34,7 +34,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from taza_rag.agent.aspects import classify, satisfied
-from taza_rag.models import RetrievedChunk
+from taza_rag.market import TRADEOFF_BALANCED, TRADEOFF_THOROUGH
+from taza_rag.models import Chunk, RetrievedChunk
 
 # Targeting dominates: a passage that speaks to a live gap is worth more than a
 # marginally better-ranked one that does not.
@@ -297,6 +298,113 @@ def select(
             )
 
     return admitted, ledger
+
+
+def hits_from_previews(contents: list[dict[str, Any]]) -> list[RetrievedChunk]:
+    """Rebuild rankable hits from a package catalog. Text is empty on purpose."""
+    hits: list[RetrievedChunk] = []
+    for i, row in enumerate(contents or [], start=1):
+        hits.append(
+            RetrievedChunk(
+                chunk=Chunk(
+                    chunk_id=f"preview-{row.get('doc_id') or i}",
+                    doc_id=str(row.get("doc_id") or f"preview-{i}"),
+                    text="",
+                    title=str(row.get("title") or ""),
+                    source=str(row.get("source") or ""),
+                    published_at=row.get("published_at"),
+                    token_estimate=int(row.get("token_count") or 0),
+                ),
+                score=float(row.get("score") or 0.0),
+                rank=i,
+                scores={
+                    "authority": float(row.get("authority") or 1.0),
+                    "freshness": float(row.get("freshness") or 1.0),
+                },
+            )
+        )
+    return hits
+
+
+def package_price(offer: dict[str, Any]) -> int:
+    price = offer.get("price") or {}
+    try:
+        return int(price.get("amount") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def score_package(
+    offer: dict[str, Any],
+    *,
+    wanted: list[str],
+    pooled_doc_ids: set[str] | None = None,
+    purchase_gate: bool = True,
+    min_value: float = MIN_VALUE,
+) -> tuple[float, int] | None:
+    """Expected value of buying this package, or None if it is not worth its price.
+
+    Catalog only: titles, sources, scores. The body is not in the offer.
+    """
+    price = package_price(offer)
+    if price <= 0:
+        return None
+    if not purchase_gate:
+        label = str(offer.get("tradeoff_label") or "")
+        bonus = 2.0 if label == TRADEOFF_THOROUGH else 1.0 if label == TRADEOFF_BALANCED else 0.0
+        return (float(price) + bonus, price)
+
+    previews = hits_from_previews(list(offer.get("contents") or []))
+    if not previews:
+        return None
+    _admitted, ledger = select(
+        [("shop", hit) for hit in previews],
+        wanted=wanted,
+        pooled_chunk_ids=set(),
+        pooled_doc_ids=pooled_doc_ids or set(),
+        budget_left=len(previews),
+        round_index=0,
+        min_value=min_value,
+    )
+    if not ledger.charged:
+        return None
+    return (sum(d.value for d in ledger.charged), price)
+
+
+def choose_package(
+    packages: list[dict[str, Any]],
+    *,
+    wanted: list[str],
+    budget_left: int,
+    pooled_doc_ids: set[str] | None = None,
+    purchase_gate: bool = True,
+    min_value: float = MIN_VALUE,
+) -> dict[str, Any] | None:
+    """Pick one package from a bid using only what query revealed.
+
+    The commercial unit is the package, not the passage: you cannot buy two of five
+    items. So this scores each offer on its catalog and either commits to the whole
+    package or walks away.
+    """
+    ranked: list[tuple[float, int, dict[str, Any]]] = []
+    for offer in packages:
+        price = package_price(offer)
+        if price <= 0 or price > budget_left:
+            continue
+        scored = score_package(
+            offer,
+            wanted=wanted,
+            pooled_doc_ids=pooled_doc_ids,
+            purchase_gate=purchase_gate,
+            min_value=min_value,
+        )
+        if scored is None:
+            continue
+        ranked.append((scored[0], price, offer))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda row: (-row[0], row[1], str(row[2].get("tradeoff_label") or "")))
+    return ranked[0][2]
 
 
 def _decision(

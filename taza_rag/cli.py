@@ -402,7 +402,7 @@ def research_cmd(
     ),
     out: Optional[Path] = typer.Option(None, help="Write the full run as JSON"),
 ) -> None:
-    """Multi-step research agent: decompose, search in parallel, judge sufficiency, answer."""
+    """Multi-step research agent: shop packages, judge sufficiency, answer."""
     if not settings.openai_api_key:
         console.print(
             "[yellow]OPENAI_API_KEY not set.[/yellow] "

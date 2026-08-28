@@ -325,6 +325,13 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   font-weight: 600;
 }
 .offer .meta { margin: 4px 0 0; }
+.offer .catalog {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 42em;
+}
 .offer-buy { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .offer .price {
   font-variant-numeric: tabular-nums;

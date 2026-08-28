@@ -74,6 +74,7 @@ MODULES = [
     "tests.test_agent_conflict",
     "tests.test_agent_sufficiency",
     "tests.test_agent_loop",
+    "tests.test_agent_shop",
     "tests.test_market",
     "tests.test_ui",
     "tests.test_mcp_server",
