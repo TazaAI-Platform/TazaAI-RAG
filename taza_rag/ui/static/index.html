@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Taza RAG — Factiva pipeline</title>
+    <title>Taza RAG — Query playground</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
     <header class="mast">
       <div class="mast-id">
-        <p class="kicker">Taza trial · Option 1</p>
-        <h1>Factiva retrieval pipeline</h1>
+        <p class="kicker">Taza trial · query playground</p>
+        <h1>Send a task. Get the content worth buying.</h1>
       </div>
       <dl class="health" id="health">
         <div><dt>Factiva</dt><dd data-k="factiva">—</dd></div>
@@ -18,31 +18,53 @@
       </dl>
     </header>
 
+    <nav class="modes" id="modes">
+      <button type="button" data-mode="retrieve" class="on">Options</button>
+      <button type="button" data-mode="research">Research</button>
+    </nav>
+
     <form id="ask" autocomplete="off">
       <label class="ask-field">
-        <span>Query</span>
+        <span id="query-label">Task</span>
         <input
           id="query"
           name="query"
           type="search"
           required
           maxlength="400"
-          placeholder="SoftBank Group"
-          value="SoftBank Group"
+          placeholder="How exposed is SoftBank Group to its AI bets?"
         />
       </label>
       <div class="ask-tools">
-        <label class="num">
-          <span>Pack</span>
-          <input id="top-k" type="number" min="1" max="20" value="10" />
+        <label class="num agent-only">
+          <span>Budget</span>
+          <input id="max-chunks" type="number" min="4" max="200" value="40" />
         </label>
-        <label class="check">
-          <input id="raw" type="checkbox" />
-          Raw API order
-        </label>
-        <button type="submit" id="retrieve-btn">Retrieve</button>
-        <button type="button" id="answer-btn">Generate answer</button>
+        <button type="submit" id="retrieve-btn" class="retrieve-only">Get options</button>
+        <button type="button" id="answer-btn" class="retrieve-only">Write answer</button>
+        <button type="button" id="research-btn" class="agent-only">Research</button>
       </div>
+      <details class="advanced" id="advanced">
+        <summary>Advanced</summary>
+        <div class="ask-tools">
+          <label class="num">
+            <span id="topk-label">Pack</span>
+            <input id="top-k" type="number" min="1" max="20" value="10" />
+          </label>
+          <label class="num agent-only">
+            <span>Rounds</span>
+            <input id="max-rounds" type="number" min="1" max="6" value="3" />
+          </label>
+          <label class="check retrieve-only">
+            <input id="raw" type="checkbox" />
+            Raw API order
+          </label>
+          <label class="check agent-only">
+            <input id="purchase-gate" type="checkbox" checked />
+            Purchase gate
+          </label>
+        </div>
+      </details>
     </form>
 
     <p class="examples" id="examples"></p>
@@ -52,11 +74,49 @@
     <div class="workspace">
       <ol class="rail" id="rail"></ol>
       <div class="stage">
+        <section id="usage-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Consumption</h2>
+            <p class="hint" id="usage-hint"></p>
+          </div>
+          <ul class="funnel" id="usage"></ul>
+        </section>
+
         <section id="plan-panel" class="panel" hidden>
           <h2>Query plan</h2>
           <p class="lede" id="plan-lede"></p>
           <dl class="facts" id="plan-facts"></dl>
           <ol class="variants" id="variants"></ol>
+        </section>
+
+        <section id="steps-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Research plan</h2>
+            <p class="hint" id="steps-hint"></p>
+          </div>
+          <ol class="steps" id="steps"></ol>
+        </section>
+
+        <section id="rounds-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Rounds</h2>
+            <p class="hint" id="rounds-hint"></p>
+          </div>
+          <ol class="rounds" id="rounds"></ol>
+        </section>
+
+        <section id="ledger-panel" class="panel" hidden>
+          <div class="pack-head">
+            <h2>Purchases</h2>
+            <p class="hint" id="ledger-hint"></p>
+          </div>
+          <ul class="refusals" id="refusals"></ul>
+          <ol class="ledger" id="ledger"></ol>
+        </section>
+
+        <section id="conflicts-panel" class="panel" hidden>
+          <h2>Source disagreements</h2>
+          <ol class="conflicts" id="conflicts"></ol>
         </section>
 
         <section id="funnel-panel" class="panel" hidden>
@@ -66,7 +126,7 @@
 
         <section id="pack-panel" class="panel" hidden>
           <div class="pack-head">
-            <h2>Evidence pack</h2>
+            <h2 id="pack-title">Content options</h2>
             <p class="hint" id="pack-hint"></p>
           </div>
           <ol class="hits" id="hits"></ol>
@@ -77,14 +137,15 @@
           <p class="config" id="answer-config"></p>
           <div class="verify" id="verify" hidden></div>
           <article class="answer" id="answer"></article>
+          <ul class="gaps" id="gaps" hidden></ul>
           <ol class="cites" id="cites"></ol>
         </section>
       </div>
     </div>
 
     <footer class="colophon">
-      Ranking is non-LLM. Every chunk has a marketplace cost — precision over coverage.
-      Scores are within-tier ingredients, not the composite.
+      Send a task. Ranking knobs stay in Advanced. Offered, bought, refused, and cited
+      are the consumption record — what this call actually used.
     </footer>
     <script src="/app.js"></script>
   </body>

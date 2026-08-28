@@ -87,6 +87,19 @@ disagreements** on one Airbus/Boeing question because two companies described in
 words looked like one subject. Both are fixed and both now have tests.
 [Appendix 7](docs/agent/07-limitations.md) has the rest, plus what I would do next.
 
+## Agent-facing surface
+
+The commercial boundary is MCP (`taza-rag mcp`), not a Factiva-shaped API. Three tools,
+split by what they cost: `taza_plan` is free, `taza_retrieve` bills the returned pack,
+`taza_research` is capped by `max_chunks`. Every result carries the same `usage` block —
+**offered, bought, refused, cited** — so a caller reconciles spend without trusting the
+answer. The keys do not name a corpus; Factiva is the first backend.
+
+The query playground (`taza-rag ui`) is that contract with the ranking knobs hidden.
+Send a task, get content options, see what was consumed. Pack size, rounds, raw API order
+and the purchase gate live under Advanced. Budget stays visible on research because it is
+the spend cap, not a ranking parameter.
+
 ## Run it
 
 ```bash
@@ -95,7 +108,9 @@ taza-rag research "..." --no-llm-plan          # heuristic plan, no planner call
 taza-rag research "..." --max-rounds 1         # ablate the refinement loop
 taza-rag eval-research                          # 12 questions, deterministic + A1
 taza-rag eval-research --limit 4 --no-judge     # fast deterministic-only pass
-python scripts/run_tests.py                     # 198 offline tests, network blocked
+taza-rag ui                                     # query playground (knobs under Advanced)
+taza-rag mcp                                    # stdio MCP: plan / retrieve / research
+python scripts/run_tests.py                     # offline tests, network blocked
 ```
 
 Needs `OPENAI_API_KEY` and Factiva credentials in `.env` (see the main README). The

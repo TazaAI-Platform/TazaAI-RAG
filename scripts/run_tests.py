@@ -70,10 +70,12 @@ MODULES = [
     "tests.test_facts",
     "tests.test_agent_plan",
     "tests.test_agent_aspects",
+    "tests.test_agent_purchase",
     "tests.test_agent_conflict",
     "tests.test_agent_sufficiency",
     "tests.test_agent_loop",
     "tests.test_ui",
+    "tests.test_mcp_server",
     "tests.test_smoke",
 ]
 

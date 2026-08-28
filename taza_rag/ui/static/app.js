@@ -11,32 +11,47 @@ const EXAMPLES = [
   { intent: "brand", q: "Boeing reputation after safety incidents" },
 ];
 
-const RAIL = [
-  ["plan", "Plan"],
-  ["variants", "Variants"],
-  ["funnel", "Funnel"],
-  ["pack", "Pack"],
-  ["answer", "Answer"],
+const RESEARCH_EXAMPLES = [
+  { intent: "exposure", q: "How exposed is SoftBank Group to its AI bets, and what do its own numbers say?" },
+  { intent: "cost", q: "What is Deutsche Bank restructuring, and what has it cost so far?" },
+  { intent: "compare", q: "Compare Airbus and Boeing on aircraft orders and delivery performance." },
+  { intent: "risk", q: "Why is private credit under scrutiny, and what are the specific risks?" },
 ];
 
-const state = { legend: { scores: [], tiers: [] }, run: null, openai: false };
+const RAIL = {
+  retrieve: [
+    ["plan", "Plan"],
+    ["variants", "Variants"],
+    ["spend", "Spend"],
+    ["pack", "Options"],
+    ["answer", "Answer"],
+  ],
+  research: [
+    ["plan", "Plan"],
+    ["steps", "Steps"],
+    ["spend", "Spend"],
+    ["pack", "Evidence"],
+    ["answer", "Answer"],
+  ],
+};
+
+const state = { legend: { scores: [], tiers: [] }, run: null, openai: false, mode: "retrieve" };
 
 const $ = (id) => document.getElementById(id);
 
 async function boot() {
-  $("examples").innerHTML =
-    `<span class="lead">Try</span>` +
-    EXAMPLES.map(
-      (ex) =>
-        `<span class="ex"><i>${escapeHtml(ex.intent)}</i>` +
-        `<button type="button" data-q="${escapeAttr(ex.q)}">${escapeHtml(ex.q)}</button></span>`
-    ).join("");
+  paintExamples();
   $("examples").addEventListener("click", (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
     $("query").value = btn.dataset.q;
     $("query").focus();
   });
+  $("modes").addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (btn) setMode(btn.dataset.mode);
+  });
+  setMode("retrieve");
   renderRail("plan");
   try {
     const health = await get("/api/health");
@@ -46,19 +61,56 @@ async function boot() {
       dd.className = on ? "on" : "off";
     });
     state.openai = !!health.openai;
-    $("answer-btn").disabled = !state.openai;
-    if (!state.openai) $("answer-btn").title = "OPENAI_API_KEY is not set";
+    syncButtons(false);
     state.legend = await get("/api/legend");
   } catch (err) {
     showStatus(String(err), true);
   }
 }
 
+function paintExamples() {
+  const list = state.mode === "research" ? RESEARCH_EXAMPLES : EXAMPLES;
+  $("examples").innerHTML =
+    `<span class="lead">Try</span>` +
+    list
+      .map(
+        (ex) =>
+          `<span class="ex"><i>${escapeHtml(ex.intent)}</i>` +
+          `<button type="button" data-q="${escapeAttr(ex.q)}">${escapeHtml(ex.q)}</button></span>`
+      )
+      .join("");
+}
+
+function setMode(mode) {
+  state.mode = mode === "research" ? "research" : "retrieve";
+  state.run = null;
+  document.body.className = `mode-${state.mode}`;
+  document.querySelectorAll("#modes button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.mode === state.mode);
+  });
+  const research = state.mode === "research";
+  $("query-label").textContent = "Task";
+  $("topk-label").textContent = research ? "Per query" : "Pack";
+  $("top-k").value = research ? 6 : 10;
+  $("query").placeholder = research
+    ? RESEARCH_EXAMPLES[0].q
+    : "How exposed is SoftBank Group to its AI bets?";
+  $("pack-title").textContent = research ? "Evidence pack" : "Content options";
+  paintExamples();
+  ["usage-panel", "plan-panel", "funnel-panel", "pack-panel", "answer-panel", "steps-panel",
+   "rounds-panel", "ledger-panel", "conflicts-panel"].forEach((id) => hide($(id)));
+  showStatus("");
+  syncButtons(false);
+  renderRail("plan");
+}
+
 $("ask").addEventListener("submit", async (e) => {
   e.preventDefault();
-  await retrieve();
+  if (state.mode === "research") await research();
+  else await retrieve();
 });
 $("answer-btn").addEventListener("click", () => answer());
+$("research-btn").addEventListener("click", () => research());
 
 async function retrieve() {
   const query = $("query").value.trim();
@@ -75,6 +127,7 @@ async function retrieve() {
     showStatus(raw ? "Single Factiva call…" : "Retrieving in parallel from Factiva…");
     const run = await post("/api/retrieve", { query, top_k, raw });
     state.run = run;
+    paintUsage(run.usage);
     paintRun(run);
     showStatus("");
   } catch (err) {
@@ -102,6 +155,7 @@ async function answer() {
       paintPlan(await post("/api/plan", { query }));
       paintHits(payload.hits || []);
     }
+    paintUsage(payload.usage);
     paintAnswer(payload);
     showStatus("");
   } catch (err) {
@@ -109,6 +163,168 @@ async function answer() {
   } finally {
     busy(false);
   }
+}
+
+async function research() {
+  const query = $("query").value.trim();
+  if (!query) return;
+  busy(true);
+  try {
+    showStatus("Planning the research…");
+    paintPlan(await post("/api/plan", { query }));
+    showStatus("Searching in parallel, judging coverage, refining what is missing…");
+    renderRail("rounds");
+    const run = await post("/api/research", {
+      query,
+      top_k: Number($("top-k").value || 6),
+      max_rounds: Number($("max-rounds").value || 3),
+      max_chunks: Number($("max-chunks").value || 40),
+      purchase_gate: $("purchase-gate").checked,
+    });
+    state.run = run;
+    paintUsage(run.usage);
+    paintResearch(run);
+    showStatus("");
+  } catch (err) {
+    showStatus(err.message || String(err), true);
+  } finally {
+    busy(false);
+  }
+}
+
+function paintResearch(run) {
+  // The query-plan panel was already painted from /api/plan, which is the only place the
+  // date window comes from. Repainting it here would blank that, and would duplicate the
+  // steps that the Research plan panel owns with more detail.
+  const plan = run.plan || {};
+
+  const gapSet = new Set((run.gaps || []).map((g) => `${g.sub_question_id}::${g.aspect}`));
+  show($("steps-panel"));
+  $("steps-hint").textContent =
+    `${plan.method || "?"} plan · coverage ${fmt(run.coverage)} · stopped on ${run.stop_reason}`;
+  $("steps").innerHTML = (plan.sub_questions || [])
+    .map((sub) => {
+      const cov = (run.sub_coverage || {})[sub.id];
+      const aspects = (sub.aspects || [])
+        .map((a) => {
+          const missing = gapSet.has(`${sub.id}::${a}`);
+          return `<span class="aspect ${missing ? "gap" : "met"}">${escapeHtml(a)}</span>`;
+        })
+        .join("");
+      return `<li class="step">
+        <span class="sid">${escapeHtml(sub.id)}</span>
+        <div><h3>${escapeHtml(sub.question)}</h3>${aspects || '<span class="aspect">no aspects</span>'}</div>
+        <span class="cov">${cov === undefined ? "—" : fmt(cov)}</span>
+      </li>`;
+    })
+    .join("");
+
+  show($("rounds-panel"));
+  $("rounds-hint").textContent = "each round shows what it cost and what it bought";
+  $("rounds").innerHTML = (run.rounds || [])
+    .map((r) => {
+      const failed = (r.failed_queries || []).length
+        ? `<span class="fail"> · ${r.failed_queries.length} failed upstream</span>`
+        : "";
+      const queries = (r.queries || []).map((q) => escapeHtml(q)).join("<br>") || "<em>none</em>";
+      return `<li class="round">
+        <span class="rid">round ${r.index}</span>
+        <div>
+          <p class="queries">${queries}</p>
+          <p class="nums">${r.chunks_returned} offered · ${r.new_chunks} bought ·
+            +${r.new_findings} facts · coverage ${fmt(r.coverage)}
+            (${r.coverage_delta >= 0 ? "+" : ""}${fmt(r.coverage_delta)}) ·
+            ${r.latency_ms} ms${failed}</p>
+        </div>
+      </li>`;
+    })
+    .join("");
+
+  const led = run.ledger || {};
+  if ((led.decisions || []).length) {
+    show($("ledger-panel"));
+    $("ledger-hint").textContent =
+      `${led.charged} bought of ${led.offered} offered · ${led.already_held} already held · ` +
+      `${led.rejected} refused · scored on headline and lead only`;
+    $("refusals").innerHTML = Object.entries(led.rejection_reasons || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, n]) => `<li><b>×${n}</b> refused — ${escapeHtml(reason)}</li>`)
+      .join("");
+    $("ledger").innerHTML = (led.decisions || [])
+      .map(
+        (d) => `<li>
+        <span class="verdict ${d.admitted ? "buy" : "pass"}">${d.admitted ? "buy" : "pass"}</span>
+        <span class="val">${d.value.toFixed(2)}</span>
+        <span><span class="what">${escapeHtml(d.title || "")}</span>
+          <span class="why">— ${escapeHtml(d.source || "")} · ${escapeHtml(d.reason || "")}</span></span>
+      </li>`
+      )
+      .join("");
+  } else {
+    hide($("ledger-panel"));
+  }
+
+  const disagreements = (run.conflicts || []).filter((c) => c.kind === "disagreement");
+  if (disagreements.length) {
+    show($("conflicts-panel"));
+    $("conflicts").innerHTML = disagreements
+      .map((c) => {
+        const side = (f, lead) =>
+          `<p class="side ${lead ? "lead" : ""}"><b>[${escapeHtml(f.label)}]</b> ${escapeHtml(f.text)}` +
+          (lead ? " <em>(leads)</em>" : "") +
+          `</p>`;
+        return `<li>
+          ${side(c.left, c.preferred_label === c.left.label)}
+          ${side(c.right, c.preferred_label === c.right.label)}
+          <p class="why">${escapeHtml(c.reason)}</p>
+        </li>`;
+      })
+      .join("");
+  } else {
+    hide($("conflicts-panel"));
+  }
+
+  paintHits(run.evidence || []);
+  $("pack-hint").textContent =
+    `${run.cost.unique_chunks} passages bought of ${run.cost.chunks_returned} offered · ` +
+    `${run.cost.evidence_tokens} tokens · ${run.latency_ms.total} ms total`;
+
+  paintAnswer(run);
+
+  if ((run.gaps || []).length) {
+    show($("gaps"));
+    $("gaps").innerHTML = run.gaps
+      .map((g) => `<li>${escapeHtml(g.aspect)} <span>(${escapeHtml(g.sub_question_id)})</span></li>`)
+      .join("");
+  } else {
+    hide($("gaps"));
+  }
+  renderRail("answer");
+}
+
+function fmt(n) {
+  return Number(n || 0).toFixed(2);
+}
+
+function paintUsage(u) {
+  if (!u) {
+    hide($("usage-panel"));
+    return;
+  }
+  show($("usage-panel"));
+  $("usage").innerHTML = [
+    metric(u.offered, "Offered"),
+    metric(u.bought, "Bought"),
+    metric(u.refused, "Refused"),
+    metric(u.cited, "Cited"),
+  ].join("");
+  const bits = [];
+  if (u.budget != null) bits.push(`budget ${u.budget}`);
+  if (u.retrieval_calls) bits.push(`${u.retrieval_calls} retrievals`);
+  if (u.llm_calls) bits.push(`${u.llm_calls} model calls`);
+  $("usage-hint").textContent = bits.length
+    ? bits.join(" · ")
+    : "what this call offered, bought, and cited";
 }
 
 function paintPlan(plan) {
@@ -126,6 +342,9 @@ function paintPlan(plan) {
   $("variants").innerHTML = (plan.variants || [])
     .map((v, i) => `<li><span class="n">v${i + 1}</span><span>${escapeHtml(v)}</span></li>`)
     .join("");
+  // In research mode the sub-questions are the real plan, shown in their own panel with
+  // coverage; the heuristic expansion variants would only be noise beside them.
+  $("variants").hidden = state.mode === "research";
   renderRail("variants");
 }
 
@@ -232,7 +451,8 @@ function paintAnswer(payload) {
   $("cites").innerHTML = (payload.citations || [])
     .map(
       (c) =>
-        `<li><b>${escapeHtml(c.source || "")}</b> — ${escapeHtml(c.title || "")}
+        `<li>${c.label ? `<b>[${escapeHtml(c.label)}]</b> ` : ""}` +
+        `<b>${escapeHtml(c.source || "")}</b> — ${escapeHtml(c.title || "")}
          <span>(${escapeHtml(c.published_at || "n/a")} · ${escapeHtml(c.doc_id || "")})</span></li>`
     )
     .join("");
@@ -265,9 +485,9 @@ function selectHit(el) {
 }
 
 function renderRail(active, latency) {
-  $("rail").innerHTML = RAIL.map(([id, label]) => {
+  $("rail").innerHTML = (RAIL[state.mode] || RAIL.retrieve).map(([id, label]) => {
     const cls = id === active ? "active" : "";
-    const ms = latency && id === "funnel" && latency.factiva_multi != null
+    const ms = latency && id === "spend" && latency.factiva_multi != null
       ? `<span class="ms">${latency.factiva_multi} ms Factiva</span>`
       : latency && id === "pack" && latency.rank != null
         ? `<span class="ms">${latency.rank} ms rank</span>`
@@ -293,8 +513,15 @@ function label(intent) {
 function show(el) { el.hidden = false; }
 function hide(el) { el.hidden = true; }
 function busy(on) {
+  syncButtons(on);
+}
+function syncButtons(on) {
   $("retrieve-btn").disabled = on;
   $("answer-btn").disabled = on || !state.openai;
+  $("research-btn").disabled = on || !state.openai;
+  const missing = "OPENAI_API_KEY is not set";
+  $("answer-btn").title = state.openai ? "" : missing;
+  $("research-btn").title = state.openai ? "" : missing;
 }
 function showStatus(msg, err) {
   const el = $("status");

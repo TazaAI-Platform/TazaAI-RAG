@@ -32,6 +32,7 @@ from taza_rag.agent.models import (
     SubQuestion,
 )
 from taza_rag.agent.plan import execution_order, make_plan
+from taza_rag.agent.purchase import select
 from taza_rag.agent.sufficiency import assess
 from taza_rag.agent.synthesize import compose, extract_findings
 from taza_rag.config import settings
@@ -70,6 +71,10 @@ def research(
     issued: set[str] = set()
 
     # --- Round 0: the plan itself, in dependency waves -----------------------------------
+    # Nothing is covered yet, so every aspect the plan declared is what the gate should be
+    # looking for in a candidate's headline.
+    open_aspects = [a for sub in result.plan.sub_questions for a in sub.aspects]
+
     round0 = RoundRecord(index=0)
     for wave in execution_order(result.plan):
         tasks = [(sub, sub.question) for sub in wave]
@@ -79,6 +84,8 @@ def research(
         issued.update(q for _s, q in tasks)
         round0.chunks_returned += outcome.chunks_returned
         round0.latency_ms += outcome.latency_ms
+
+        candidates: list[tuple[str, Any]] = []
         for task in outcome.results:
             if task.error:
                 round0.failed_queries.append(task.query)
@@ -87,7 +94,11 @@ def research(
             sub = result.plan.by_id(task.sub_question_id)
             if sub is None:
                 continue
-            round0.new_chunks += len(pool.add(task.hits, sub.id, 0))
+            candidates.extend((sub.id, hit) for hit in task.hits)
+
+        round0.new_chunks += _buy(
+            candidates, pool, result, budget, cost, wanted=open_aspects, round_index=0
+        )
 
     cost.chunks_returned += round0.chunks_returned
     cost.unique_chunks = len(pool)
@@ -125,6 +136,7 @@ def research(
         record.latency_ms = outcome.latency_ms
 
         touched: dict[str, SubQuestion] = {}
+        candidates = []
         for task in outcome.results:
             if task.error:
                 record.failed_queries.append(task.query)
@@ -133,8 +145,20 @@ def research(
             sub = result.plan.by_id(task.sub_question_id)
             if sub is None:
                 continue
-            record.new_chunks += len(pool.add(task.hits, sub.id, record.index))
+            candidates.extend((sub.id, hit) for hit in task.hits)
             touched[sub.id] = sub
+
+        # Later rounds exist only to close gaps, so the gate scores candidates against the
+        # aspects still missing rather than against the whole plan.
+        record.new_chunks += _buy(
+            candidates,
+            pool,
+            result,
+            budget,
+            cost,
+            wanted=[g.aspect for g in verdict.gaps],
+            round_index=record.index,
+        )
 
         cost.chunks_returned += record.chunks_returned
         cost.unique_chunks = len(pool)
@@ -205,6 +229,57 @@ def research(
     result.config_name = f"research_v1+{result.plan.method}" + ("+verified" if verify else "")
     result.latency_ms = _timings(t_start, t_plan, t_gather, t_assess, time.perf_counter())
     return result
+
+
+def _buy(
+    candidates: list[tuple[str, Any]],
+    pool: EvidencePool,
+    result: ResearchResult,
+    budget: Budget,
+    cost: Cost,
+    *,
+    wanted: list[str],
+    round_index: int,
+) -> int:
+    """Admit what is worth buying, record every decision, return how much is new.
+
+    With the gate off, everything retrieval offered is pooled up to the passage budget. That
+    is the honest baseline the gate has to beat, and it is what `--no-purchase-gate` runs.
+    """
+    if not candidates:
+        return 0
+
+    budget_left = max(0, budget.max_unique_chunks - len(pool))
+
+    if not budget.purchase_gate:
+        admitted = candidates[:budget_left] if budget_left else []
+        new = 0
+        for sub_id, hit in admitted:
+            new += len(pool.add([hit], sub_id, round_index))
+        return new
+
+    admitted, ledger = select(
+        candidates,
+        wanted=wanted,
+        pooled_chunk_ids={pool.key(i.hit) for i in pool.items},
+        pooled_doc_ids={i.doc_id for i in pool.items},
+        budget_left=budget_left,
+        round_index=round_index,
+        min_value=budget.min_purchase_value,
+    )
+
+    new = 0
+    for sub_id, hit in admitted:
+        new += len(pool.add([hit], sub_id, round_index))
+
+    # Stamp the label the pool assigned, so a ledger line can be traced to a citation.
+    labels = {pool.key(item.hit): item.label for item in pool.items}
+    for decision in ledger.decisions:
+        if decision.admitted:
+            decision.label = labels.get(decision.chunk_id or decision.doc_id, "")
+        result.ledger.record(decision)
+    cost.candidates_rejected += len(ledger.rejected)
+    return new
 
 
 def _timings(t0: float, t_plan: float, t_gather: float, t_assess: float, t_end: float) -> dict[str, float]:

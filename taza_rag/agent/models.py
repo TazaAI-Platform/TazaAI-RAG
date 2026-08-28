@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from taza_rag.agent.purchase import MIN_VALUE, Ledger
 from taza_rag.models import RetrievedChunk, SearchIntent
 
 
@@ -211,6 +212,10 @@ class Budget:
     # Coverage at which the plan counts as answered; 1.0 is rarely reachable on a live
     # corpus and chasing it buys noise.
     target_coverage: float = 0.8
+    # Score candidates on metadata and buy only the ones expected to move an open gap.
+    # Off is the honest baseline: pool everything retrieval offers.
+    purchase_gate: bool = True
+    min_purchase_value: float = MIN_VALUE
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -220,35 +225,55 @@ class Budget:
             "top_k_per_query": self.top_k_per_query,
             "min_new_findings": self.min_new_findings,
             "target_coverage": self.target_coverage,
+            "purchase_gate": self.purchase_gate,
+            "min_purchase_value": self.min_purchase_value,
         }
 
 
 @dataclass
 class Cost:
+    """Spend in the units the marketplace charges for.
+
+    `chunks_returned` is what retrieval offered; `unique_chunks` is what the agent chose to
+    buy and is therefore the billed number. The gap between them is the purchase gate doing
+    its job, and `candidates_rejected` says how much of it was a deliberate refusal rather
+    than a duplicate.
+    """
+
     chunks_returned: int = 0
     unique_chunks: int = 0
+    candidates_rejected: int = 0
     retrieval_calls: int = 0
     llm_calls: int = 0
     evidence_tokens: int = 0
 
     @property
-    def reuse_rate(self) -> float:
-        """Share of returned passages already in the pool.
+    def admission_rate(self) -> float:
+        """Share of offered passages actually bought."""
+        if not self.chunks_returned:
+            return 0.0
+        return self.unique_chunks / self.chunks_returned
 
-        High reuse means sub-questions are overlapping, which is a planner defect: the run
-        paid for the same passage more than once.
+    @property
+    def reuse_rate(self) -> float:
+        """Share of offered passages that did not enter the pool.
+
+        Either a duplicate — two sub-questions wanted the same story, which points at the
+        planner — or a refusal by the purchase gate. `candidates_rejected` separates the two.
         """
         if not self.chunks_returned:
             return 0.0
-        return 1.0 - (self.unique_chunks / self.chunks_returned)
+        return 1.0 - self.admission_rate
 
     def payload(self) -> dict[str, Any]:
         return {
             "chunks_returned": self.chunks_returned,
             "unique_chunks": self.unique_chunks,
+            "candidates_rejected": self.candidates_rejected,
             "retrieval_calls": self.retrieval_calls,
             "llm_calls": self.llm_calls,
             "evidence_tokens": self.evidence_tokens,
+            "admission_rate": round(self.admission_rate, 3),
             "reuse_rate": round(self.reuse_rate, 3),
         }
 
@@ -269,6 +294,7 @@ class ResearchResult:
     abstained: bool = False
     verification: dict[str, Any] | None = None
     cost: Cost = field(default_factory=Cost)
+    ledger: Ledger = field(default_factory=Ledger)
     budget: Budget = field(default_factory=Budget)
     latency_ms: dict[str, float] = field(default_factory=dict)
     config_name: str = "research_v1"
@@ -291,6 +317,7 @@ class ResearchResult:
             "evidence": [e.payload() for e in self.evidence],
             "verification": self.verification,
             "cost": self.cost.payload(),
+            "ledger": self.ledger.payload(),
             "budget": self.budget.payload(),
             "latency_ms": {k: round(v) for k, v in self.latency_ms.items()},
             "errors": list(self.errors),

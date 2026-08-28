@@ -395,6 +395,11 @@ def research_cmd(
     llm_plan: bool = typer.Option(
         True, "--llm-plan/--no-llm-plan", help="--no-llm-plan uses heuristic query expansion"
     ),
+    purchase_gate: bool = typer.Option(
+        True,
+        "--purchase-gate/--no-purchase-gate",
+        help="Buy only passages whose metadata suggests they close an open gap",
+    ),
     out: Optional[Path] = typer.Option(None, help="Write the full run as JSON"),
 ) -> None:
     """Multi-step research agent: decompose, search in parallel, judge sufficiency, answer."""
@@ -416,6 +421,7 @@ def research_cmd(
         max_sub_questions=max_sub,
         top_k_per_query=top_k,
         target_coverage=target,
+        purchase_gate=purchase_gate,
     )
     try:
         result = research(q, budget=budget, verify=verify, use_llm_plan=llm_plan)
@@ -469,6 +475,16 @@ def research_cmd(
             f"- [{item.label}] {c.title} ({c.source}, {c.published_at}) {c.doc_id}",
             markup=False,
         )
+    if result.ledger.decisions:
+        led = result.ledger
+        console.print(
+            f"\n[bold]purchases[/bold] {len(led.charged)} bought of {len(led.decisions)} offered  "
+            f"[dim]{len(led.admitted) - len(led.charged)} already held, "
+            f"{len(led.rejected)} refused[/dim]"
+        )
+        for reason, count in sorted(led.rejection_reasons().items(), key=lambda kv: -kv[1]):
+            console.print(f"  [dim]refused ×{count}: {escape(reason)}[/dim]")
+
     console.print(f"\nCost: {result.cost.payload()}")
     console.print(f"Latency ms: { {k: round(v) for k, v in result.latency_ms.items()} }")
 
@@ -489,6 +505,7 @@ def eval_research_cmd(
     judge: bool = typer.Option(True, "--judge/--no-judge", help="Also score A1 on the answer"),
     judge_model: Optional[str] = typer.Option(None, "--judge-model"),
     verify: bool = typer.Option(True, "--verify/--no-verify"),
+    purchase_gate: bool = typer.Option(True, "--purchase-gate/--no-purchase-gate"),
 ) -> None:
     """Research-agent eval: plan coverage, answer coverage, stopping calibration, cost."""
     if not settings.openai_api_key:
@@ -502,7 +519,10 @@ def eval_research_cmd(
         gold,
         report,
         budget=Budget(
-            max_rounds=max_rounds, max_unique_chunks=max_chunks, top_k_per_query=top_k
+            max_rounds=max_rounds,
+            max_unique_chunks=max_chunks,
+            top_k_per_query=top_k,
+            purchase_gate=purchase_gate,
         ),
         limit=limit,
         judge=judge,
@@ -513,12 +533,21 @@ def eval_research_cmd(
     console.print(f"Worksheet → {report.with_suffix('.md')}")
 
 
+@app.command("mcp")
+def mcp_cmd() -> None:
+    """Serve retrieval and research as MCP tools over stdio (agent-facing boundary)."""
+    from taza_rag.mcp_server import serve
+
+    # No console output: stdout is the protocol stream, and a stray line corrupts it.
+    serve()
+
+
 @app.command("ui")
 def ui_cmd(
     host: str = typer.Option("127.0.0.1", help="Bind address. Keep localhost unless you intend to share."),
     port: int = typer.Option(8765, min=1, max=65535),
 ) -> None:
-    """Newsroom UI: query plan, score breakdown, evidence pack, optional answer."""
+    """Query playground: send a task, see what was offered, bought, and cited."""
     from taza_rag.ui.server import serve
 
     serve(host, port)

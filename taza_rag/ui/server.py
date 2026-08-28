@@ -20,6 +20,7 @@ from taza_rag.ui.serialize import (
     answer_payload,
     health_payload,
     plan_payload,
+    research_payload,
     run_payload,
 )
 
@@ -103,6 +104,9 @@ class UiHandler(BaseHTTPRequestHandler):
             if path == "/api/answer":
                 self._json(200, self._answer(query, top_k=top_k, raw=raw))
                 return
+            if path == "/api/research":
+                self._json(200, self._research(query, body))
+                return
         except FactivaRetrieveError as e:
             self._json(502, {"error": "Factiva retrieve failed", "detail": str(e)[:240]})
             return
@@ -144,6 +148,31 @@ class UiHandler(BaseHTTPRequestHandler):
         result = answer_with_factiva(query, top_k=top_k, raw=raw)
         return answer_payload(result)
 
+    def _research(self, query: str, body: dict[str, Any]) -> dict[str, Any]:
+        research = getattr(self.server, "research_fn", None)
+        if research:
+            return research(query, body)
+        if not settings.openai_api_key:
+            raise LLMError("OPENAI_API_KEY is not set. The agent cannot plan or write without it.")
+
+        from taza_rag.agent.loop import research as run_research
+        from taza_rag.agent.models import Budget
+
+        budget = Budget(
+            max_rounds=_clamp(body.get("max_rounds"), 1, 6, 3),
+            max_unique_chunks=_clamp(body.get("max_chunks"), 4, 200, 40),
+            max_sub_questions=_clamp(body.get("max_sub"), 1, 8, 5),
+            top_k_per_query=_clamp(body.get("top_k"), 1, 20, 6),
+            purchase_gate=bool(body.get("purchase_gate", True)),
+        )
+        result = run_research(
+            query,
+            budget=budget,
+            verify=bool(body.get("verify", True)),
+            use_llm_plan=bool(body.get("llm_plan", True)),
+        )
+        return research_payload(result)
+
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
@@ -184,10 +213,12 @@ def make_server(
     *,
     retrieve_fn: Callable[..., dict[str, Any]] | None = None,
     answer_fn: Callable[..., dict[str, Any]] | None = None,
+    research_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), UiHandler)
     httpd.retrieve_fn = retrieve_fn  # type: ignore[attr-defined]
     httpd.answer_fn = answer_fn  # type: ignore[attr-defined]
+    httpd.research_fn = research_fn  # type: ignore[attr-defined]
     return httpd
 
 

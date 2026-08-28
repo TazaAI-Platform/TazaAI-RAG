@@ -71,6 +71,45 @@ SCORE_LEGEND: list[dict[str, Any]] = [
 ]
 
 
+# Same keys on every MCP tool and every UI payload. A caller reconciles spend from this
+# block without reading the answer, and a second corpus does not get to invent a new shape.
+USAGE_FIELDS = (
+    "offered",
+    "bought",
+    "refused",
+    "cited",
+    "retrieval_calls",
+    "llm_calls",
+    "budget",
+)
+
+
+def usage_payload(
+    *,
+    offered: int = 0,
+    bought: int = 0,
+    refused: int = 0,
+    cited: int = 0,
+    retrieval_calls: int = 0,
+    llm_calls: int = 0,
+    budget: int | None = None,
+) -> dict[str, Any]:
+    """What this call consumed: offered, bought, refused, cited.
+
+    Bodies stay out of it. The point is a commercial record an agent can audit, not a
+    second copy of the evidence pack.
+    """
+    return {
+        "offered": int(offered),
+        "bought": int(bought),
+        "refused": int(refused),
+        "cited": int(cited),
+        "retrieval_calls": int(retrieval_calls),
+        "llm_calls": int(llm_calls),
+        "budget": None if budget is None else int(budget),
+    }
+
+
 def plan_payload(query: str, *, max_variants: int = 3) -> dict[str, Any]:
     """Local, no Factiva: what the pipeline will ask before it spends a retrieve."""
     q = (query or "").strip()
@@ -133,6 +172,11 @@ def run_payload(run: RetrievalRun) -> dict[str, Any]:
         "passages": run.passages,
         "latency_ms": {k: round(v) for k, v in run.latency_ms.items()},
         "hits": [hit_payload(h) for h in run.hits],
+        "usage": usage_payload(
+            offered=run.candidates,
+            bought=len(run.hits),
+            retrieval_calls=len(run.variants),
+        ),
     }
 
 
@@ -155,7 +199,58 @@ def answer_payload(result: AnswerResult) -> dict[str, Any]:
             for c in result.citations
         ],
         "hits": [hit_payload(h) for h in result.retrieved],
+        "usage": usage_payload(
+            offered=len(result.retrieved),
+            bought=len(result.retrieved),
+            cited=len(result.citations),
+        ),
     }
+
+
+def research_payload(result: Any) -> dict[str, Any]:
+    """A research run, with evidence re-rendered as scored hit cards.
+
+    `ResearchResult.payload()` already carries the plan, rounds, ledger, conflicts and gaps.
+    The only thing it lacks is the score breakdown the evidence cards render, and the labels
+    matter: a research run's labels are assigned by the pool, not by rank, so the rank-derived
+    label `hit_payload` produces has to be overwritten or a citation points at the wrong source.
+    """
+    data = result.payload()
+    data["evidence"] = [
+        {
+            **hit_payload(item.hit),
+            "label": item.label,
+            "found_by": list(item.found_by),
+            "first_round": item.first_round,
+        }
+        for item in result.evidence
+    ]
+    # The verifier's raw summary and the answer panel's shape are not the same thing, and the
+    # single-question path already normalises between them.
+    data["verification"] = _verification(result.verification)
+    data["citations"] = [
+        {
+            "doc_id": item.hit.chunk.doc_id,
+            "title": item.hit.chunk.title,
+            "source": item.hit.chunk.source,
+            "published_at": item.hit.chunk.published_at,
+            "label": item.label,
+            "excerpt": (item.hit.chunk.text or "")[:280],
+        }
+        for item in result.evidence
+        if f"[{item.label}]" in (result.answer or "")
+    ]
+    led = result.ledger.payload()
+    data["usage"] = usage_payload(
+        offered=led["offered"] or result.cost.chunks_returned,
+        bought=result.cost.unique_chunks,
+        refused=result.cost.candidates_rejected,
+        cited=len(data["citations"]),
+        retrieval_calls=result.cost.retrieval_calls,
+        llm_calls=result.cost.llm_calls,
+        budget=result.budget.max_unique_chunks,
+    )
+    return data
 
 
 def health_payload(*, factiva: bool, openai: bool) -> dict[str, Any]:

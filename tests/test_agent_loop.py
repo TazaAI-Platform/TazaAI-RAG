@@ -253,6 +253,49 @@ def test_the_run_serialises_without_leaking_credentials():
     assert "password" not in dumped
 
 
+def test_the_purchase_gate_refuses_candidates_and_records_why():
+    backend = FixtureSearch(list(DOCS))
+    with _Harness():
+        result = research(QUESTION, backend=backend, budget=Budget(top_k_per_query=4))
+
+    assert result.ledger.decisions, "every offered candidate must be accounted for"
+    # Admitted lines include re-offers of passages already held, so compare the passages
+    # bought rather than the number of decisions.
+    assert {d.chunk_id for d in result.ledger.admitted} == {
+        i.hit.chunk.chunk_id for i in result.evidence
+    }
+    assert result.cost.candidates_rejected == len(result.ledger.rejected)
+    # Each admitted line carries the citation label it became, so a charge is traceable.
+    for decision in result.ledger.admitted:
+        if decision.value > 0:
+            assert decision.label.startswith("c"), decision.payload()
+
+
+def test_turning_the_gate_off_pools_everything_retrieval_offered():
+    """The baseline the gate has to beat."""
+    gated = FixtureSearch(list(DOCS))
+    ungated = FixtureSearch(list(DOCS))
+    with _Harness():
+        on = research(QUESTION, backend=gated, budget=Budget(top_k_per_query=4))
+    with _Harness():
+        off = research(
+            QUESTION, backend=ungated, budget=Budget(top_k_per_query=4, purchase_gate=False)
+        )
+
+    assert off.cost.candidates_rejected == 0
+    assert off.ledger.decisions == []
+    assert on.cost.unique_chunks <= off.cost.unique_chunks
+
+
+def test_the_passage_budget_is_never_exceeded_by_buying():
+    backend = FixtureSearch(list(DOCS))
+    with _Harness():
+        result = research(
+            QUESTION, backend=backend, budget=Budget(top_k_per_query=4, max_unique_chunks=2)
+        )
+    assert result.cost.unique_chunks <= 2, result.cost.payload()
+
+
 def test_a_composer_that_returns_nothing_abstains_rather_than_shipping_an_empty_answer():
     def empty(system, user, **kwargs):
         return {"answer": "   ", "abstain": False}
