@@ -68,6 +68,9 @@ class Settings(BaseSettings):
         description="Stable 32-char metrics user id for Factiva usage logging",
     )
 
+    # When set, POST /api/* requires header X-UI-Token. Leave empty on localhost.
+    ui_share_token: str = ""
+
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.index_dir.mkdir(parents=True, exist_ok=True)

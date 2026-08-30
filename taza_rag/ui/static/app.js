@@ -597,8 +597,21 @@ function showStatus(msg, err) {
   show(el);
 }
 
+function shareToken() {
+  const q = new URLSearchParams(location.search).get("token");
+  if (q) sessionStorage.setItem("ui-token", q);
+  return sessionStorage.getItem("ui-token") || "";
+}
+
+function apiHeaders(extra) {
+  const headers = { ...extra };
+  const token = shareToken();
+  if (token) headers["X-UI-Token"] = token;
+  return headers;
+}
+
 async function get(url) {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: apiHeaders() });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
   return data;
@@ -606,7 +619,7 @@ async function get(url) {
 async function post(url, body) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   const data = await res.json();

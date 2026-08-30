@@ -108,6 +108,7 @@ taza-rag research "..." --max-rounds 1         # ablate the refinement loop
 taza-rag eval-research                          # 12 questions, deterministic + A1
 taza-rag eval-research --limit 4 --no-judge     # fast deterministic-only pass
 taza-rag ui                                     # query playground (query → package → fetch)
+taza-rag ui --host 0.0.0.0                      # LAN / tunnel; set UI_SHARE_TOKEN
 taza-rag mcp                                    # stdio MCP: query / transact / fetch_content
 python scripts/run_tests.py                     # offline tests, network blocked
 ```

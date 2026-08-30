@@ -47,6 +47,7 @@ _SECRET_KEYS = {
     "factiva_feed_username",
     "factiva_feed_portal_user",
     "factiva_metrics_user_id",
+    "ui_share_token",
 }
 
 
@@ -544,13 +545,20 @@ def mcp_cmd() -> None:
 
 @app.command("ui")
 def ui_cmd(
-    host: str = typer.Option("127.0.0.1", help="Bind address. Keep localhost unless you intend to share."),
-    port: int = typer.Option(8765, min=1, max=65535),
+    host: Optional[str] = typer.Option(
+        None, help="Bind address. Default 127.0.0.1; 0.0.0.0 if PORT is set (hosted)."
+    ),
+    port: Optional[int] = typer.Option(None, help="Port. Default 8765, or $PORT when hosted."),
 ) -> None:
     """Query playground: ask the marketplace, pick a package, fetch licensed content."""
+    import os
+
     from taza_rag.ui.server import serve
 
-    serve(host, port)
+    env_port = os.environ.get("PORT")
+    bind_host = host or os.environ.get("HOST") or ("0.0.0.0" if env_port else "127.0.0.1")
+    bind_port = port or int(env_port or 8765)
+    serve(bind_host, bind_port)
 
 
 @app.command()

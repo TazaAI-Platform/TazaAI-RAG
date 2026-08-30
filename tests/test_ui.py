@@ -262,6 +262,23 @@ def test_the_script_writes_from_the_grant_and_shows_package_catalogs():
     assert "grant_id: state.grantId" in js
     assert "Buy a package first" in js
     assert "p.contents" in js
+    assert "X-UI-Token" in js
+
+
+def test_a_share_token_blocks_unauthed_posts():
+    from taza_rag.ui.server import UiHandler
+
+    handler = UiHandler.__new__(UiHandler)
+    handler.server = type("S", (), {"ui_token": "secret"})()
+    handler.headers = {}
+    assert handler._authed() is False
+    handler.headers = {"X-UI-Token": "wrong"}
+    assert handler._authed() is False
+    handler.headers = {"X-UI-Token": "secret"}
+    assert handler._authed() is True
+    handler.server = type("S", (), {"ui_token": ""})()
+    handler.headers = {}
+    assert handler._authed() is True
 
 
 def test_the_query_handler_returns_packages_without_bodies():

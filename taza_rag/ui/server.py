@@ -82,6 +82,9 @@ class UiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        if not self._authed():
+            self._json(401, {"error": "UI token required"})
+            return
         try:
             body = self._read_json()
         except ValueError as e:
@@ -143,6 +146,12 @@ class UiHandler(BaseHTTPRequestHandler):
             self._json(502, {"error": "Generator failed", "detail": str(e)[:240]})
             return
         self._json(404, {"error": "not found"})
+
+    def _authed(self) -> bool:
+        token = (getattr(self.server, "ui_token", None) or settings.ui_share_token or "").strip()
+        if not token:
+            return True
+        return (self.headers.get("X-UI-Token") or "") == token
 
     def _market(self) -> Market:
         existing = getattr(self.server, "market", None)
@@ -300,12 +309,16 @@ def make_server(
     httpd.research_fn = research_fn  # type: ignore[attr-defined]
     httpd.query_fn = query_fn  # type: ignore[attr-defined]
     httpd.market = market if market is not None else Market()  # type: ignore[attr-defined]
+    httpd.ui_token = (settings.ui_share_token or "").strip()  # type: ignore[attr-defined]
     return httpd
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
     httpd = make_server(host, port)
-    print(f"Taza RAG UI  http://{host}:{port}  (Ctrl-C to stop)", flush=True)
+    shown = f"http://127.0.0.1:{port}" if host in {"0.0.0.0", "::"} else f"http://{host}:{port}"
+    print(f"Taza RAG UI  {shown}  (Ctrl-C to stop)", flush=True)
+    if httpd.ui_token:
+        print("POSTs require X-UI-Token (open with ?token=...)", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
