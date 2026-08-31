@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -14,6 +15,7 @@ from taza_rag.factiva.pipeline import QualityRetriever
 from taza_rag.factiva.retrieve import FactivaRetrieveError
 from taza_rag.llm import LLMError
 from taza_rag.market import Market, MarketError
+from taza_rag.ui.jobs import JobBoard, JobFail
 from taza_rag.ui.serialize import (
     SCORE_LEGEND,
     TIER_HELP,
@@ -40,6 +42,8 @@ MIME = {
 }
 MAX_BODY = 32_768
 MAX_QUERY = 400
+JOB_PATH = re.compile(r"^/api/jobs/([0-9a-fA-F-]{36})$")
+SLOW_POSTS = {"/api/query", "/api/retrieve", "/api/answer", "/api/research"}
 
 
 class UiHandler(BaseHTTPRequestHandler):
@@ -76,6 +80,17 @@ class UiHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        matched = JOB_PATH.match(path)
+        if matched:
+            if not self._authed():
+                self._json(401, {"error": "UI token required"})
+                return
+            snap = self._jobs().snapshot(matched.group(1))
+            if snap is None:
+                self._json(404, {"error": "unknown job"})
+                return
+            self._json(200, snap)
+            return
         name = STATIC_FILES.get(path)
         if not name:
             self._json(404, {"error": "not found"})
@@ -94,8 +109,16 @@ class UiHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": str(e)})
             return
         try:
-            if path == "/api/query":
-                self._json(200, self._query(body))
+            if path in SLOW_POSTS:
+                if path != "/api/query":
+                    query = str(body.get("query") or "").strip()
+                    if not query:
+                        self._json(400, {"error": "query is required"})
+                        return
+                    if len(query) > MAX_QUERY:
+                        self._json(400, {"error": f"query longer than {MAX_QUERY} characters"})
+                        return
+                self._enqueue(path, body)
                 return
             if path == "/api/transact":
                 self._json(200, self._market().transact(str(body.get("package_id") or "")))
@@ -117,27 +140,8 @@ class UiHandler(BaseHTTPRequestHandler):
             if len(query) > MAX_QUERY:
                 self._json(400, {"error": f"query longer than {MAX_QUERY} characters"})
                 return
-            top_k = _clamp(body.get("top_k"), 1, 20, 10)
-            raw = bool(body.get("raw"))
             if path == "/api/plan":
                 self._json(200, plan_payload(query, max_variants=3))
-                return
-            if path == "/api/retrieve":
-                self._json(200, self._retrieve(query, top_k=top_k, raw=raw))
-                return
-            if path == "/api/answer":
-                self._json(
-                    200,
-                    self._answer(
-                        query,
-                        top_k=top_k,
-                        raw=raw,
-                        grant_id=str(body.get("grant_id") or "").strip(),
-                    ),
-                )
-                return
-            if path == "/api/research":
-                self._json(200, self._research(query, body))
                 return
         except MarketError as e:
             self._json(400, {"error": str(e)})
@@ -151,7 +155,10 @@ class UiHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _authed(self) -> bool:
-        token = (getattr(self.server, "ui_token", None) or settings.ui_share_token or "").strip()
+        if hasattr(self.server, "ui_token"):
+            token = (self.server.ui_token or "").strip()
+        else:
+            token = (settings.ui_share_token or "").strip()
         if not token:
             return True
         if (self.headers.get("X-UI-Token") or "") == token:
@@ -159,6 +166,45 @@ class UiHandler(BaseHTTPRequestHandler):
         query = parse_qs(urlparse(self.path).query)
         offered = (query.get("token") or [""])[0]
         return offered == token
+
+    def _jobs(self) -> JobBoard:
+        board = getattr(self.server, "jobs", None)
+        if board is None:
+            board = JobBoard()
+            self.server.jobs = board  # type: ignore[attr-defined]
+        return board
+
+    def _enqueue(self, path: str, body: dict[str, Any]) -> None:
+        captured = dict(body)
+
+        def run() -> dict[str, Any]:
+            try:
+                if path == "/api/query":
+                    return self._query(captured)
+                query = str(captured.get("query") or "").strip()
+                top_k = _clamp(captured.get("top_k"), 1, 20, 10)
+                raw = bool(captured.get("raw"))
+                if path == "/api/retrieve":
+                    return self._retrieve(query, top_k=top_k, raw=raw)
+                if path == "/api/answer":
+                    return self._answer(
+                        query,
+                        top_k=top_k,
+                        raw=raw,
+                        grant_id=str(captured.get("grant_id") or "").strip(),
+                    )
+                if path == "/api/research":
+                    return self._research(query, captured)
+            except MarketError as e:
+                raise JobFail(400, str(e)) from e
+            except FactivaRetrieveError as e:
+                raise JobFail(502, "Factiva retrieve failed", str(e)[:240]) from e
+            except LLMError as e:
+                raise JobFail(502, "Generator failed", str(e)[:240]) from e
+            raise JobFail(404, "not found")
+
+        job_id = self._jobs().submit(run)
+        self._json(202, {"job_id": job_id, "status": "running"})
 
     def _market(self) -> Market:
         existing = getattr(self.server, "market", None)
@@ -321,6 +367,7 @@ def make_server(
     httpd.write_fn = write_fn  # type: ignore[attr-defined]
     httpd.market = market if market is not None else Market()  # type: ignore[attr-defined]
     httpd.demo = demo  # type: ignore[attr-defined]
+    httpd.jobs = JobBoard()  # type: ignore[attr-defined]
     token = ui_token if ui_token is not None else (settings.ui_share_token or "").strip()
     httpd.ui_token = (token or "").strip()  # type: ignore[attr-defined]
     return httpd

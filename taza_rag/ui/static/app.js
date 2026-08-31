@@ -173,7 +173,7 @@ async function retrieve() {
   hide($("pack-panel"));
   try {
     showStatus("Asking the marketplace…");
-    const bid = await post("/api/query", { query, top_k });
+    const bid = await postJob("/api/query", { query, top_k });
     state.run = bid;
     state.grantId = "";
     paintUsage(bid.usage);
@@ -256,7 +256,7 @@ async function answer() {
   try {
     showStatus("Writing from licensed content…");
     renderRail("answer");
-    const payload = await post("/api/answer", { query, grant_id: state.grantId });
+    const payload = await postJob("/api/answer", { query, grant_id: state.grantId });
     paintUsage(payload.usage);
     paintAnswer(payload);
     showStatus("");
@@ -279,7 +279,7 @@ async function research() {
   try {
     showStatus("Running the research agent… typically 1–2 minutes. Leave this tab open.");
     renderRail("rounds");
-    const run = await post("/api/research", {
+    const run = await postJob("/api/research", {
       query,
       top_k: Number($("top-k").value || 6),
       max_rounds: Number($("max-rounds").value || 3),
@@ -646,27 +646,78 @@ function shareToken() {
 }
 
 function apiHeaders(extra) {
-  const headers = { ...extra };
+  const headers = { Accept: "application/json", ...extra };
   const token = shareToken();
   if (token) headers["X-UI-Token"] = token;
   return headers;
 }
 
-async function get(url) {
-  const res = await fetch(url, { headers: apiHeaders() });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+function isHtmlBody(text) {
+  const head = (text || "").trimStart().slice(0, 32).toLowerCase();
+  return head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<head");
+}
+
+async function readJson(res) {
+  const text = await res.text();
+  if (isHtmlBody(text) || (res.headers.get("content-type") || "").includes("text/html")) {
+    const code = res.status;
+    if (code === 524 || code === 504 || code === 408) {
+      throw new Error("The host timed out waiting for Factiva. The request is still running — wait a moment and try again.");
+    }
+    throw new Error("The host returned a web page instead of a result (tunnel timeout). Retry.");
+  }
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error("The host returned a non-JSON response. Retry.");
+  }
+  if (!res.ok && res.status !== 202) {
+    throw new Error(data.detail || data.error || res.statusText || "request failed");
+  }
   return data;
 }
+
+async function get(url) {
+  let last;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers: apiHeaders() });
+      return await readJson(res);
+    } catch (err) {
+      last = err;
+      const msg = String(err && err.message ? err.message : err);
+      const transient = /timed out|tunnel timeout|non-JSON|Failed to fetch|NetworkError|Load failed/i.test(msg);
+      if (!transient || attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw last;
+}
+
 async function post(url, body) {
   const res = await fetch(url, {
     method: "POST",
     headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
-  return data;
+  return readJson(res);
+}
+
+async function postJob(url, body) {
+  const started = await post(url, body);
+  if (!started || !started.job_id) return started;
+  const deadline = Date.now() + (url.endsWith("/research") ? 240000 : 180000);
+  while (Date.now() < deadline) {
+    const snap = await get("/api/jobs/" + started.job_id);
+    if (snap.status === "done") return snap.result;
+    if (snap.status === "error") {
+      const err = snap.error || {};
+      throw new Error(err.detail || err.error || "job failed");
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  throw new Error("Timed out waiting for the result. Leave this tab open and retry.");
 }
 function escapeHtml(s) {
   return String(s)

@@ -137,7 +137,10 @@ def test_the_script_renders_the_usage_contract():
     assert "Ask the marketplace" in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert "data-package" in js
     assert "Leave this tab open" in js
-    assert 'post("/api/research"' in js
+    assert 'postJob("/api/research"' in js
+    assert 'postJob("/api/query"' in js
+    assert "/api/jobs/" in js
+    assert "Unexpected token" not in js
 
 
 def test_every_element_the_script_reaches_for_exists_in_the_page():
