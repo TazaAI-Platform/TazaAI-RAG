@@ -27,8 +27,7 @@ from taza_rag.agent.conflict import blocking_conflicts, describe_conflicts
 from taza_rag.agent.gather import EvidencePool
 from taza_rag.agent.models import Conflict, Finding, Gap, ResearchPlan, SubQuestion
 from taza_rag.config import settings
-from taza_rag.factiva.facts import extract_facts, splice_unused_facts
-from taza_rag.factiva.facts import Fact
+from taza_rag.factiva.facts import Fact, extract_facts, extractive_compose, extractive_facts, splice_unused_facts
 from taza_rag.factiva.verify import _labels_in, _normalise_digits
 from taza_rag.llm import LLMError, chat_json
 
@@ -86,6 +85,7 @@ def extract_findings(
     round_index: int,
     max_context_tokens: int = 1800,
     workers: int = 4,
+    extractive: bool = False,
 ) -> tuple[list[Finding], int, list[str]]:
     """Extract grounded facts for each sub-question concurrently.
 
@@ -101,12 +101,16 @@ def extract_findings(
 
     def run(job: tuple[SubQuestion, list]) -> tuple[str, list[Fact], str]:
         sub, items = job
+        subset = {item.label: item.text for item in items}
+        if extractive:
+            return sub.id, extractive_facts(subset), ""
         context = pool.context_for(items, max_tokens=max_context_tokens)
         try:
             return sub.id, extract_facts(sub.question, context, evidence), ""
         except LLMError as e:
             return sub.id, [], f"{sub.id}: extract failed: {type(e).__name__}: {e}"
 
+    workers = 1 if extractive else workers
     with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs)))) as executor:
         results = list(executor.map(run, jobs))
 
@@ -124,7 +128,7 @@ def extract_findings(
                     round_index=round_index,
                 )
             )
-    return _dedupe(findings), len(jobs), errors
+    return _dedupe(findings), 0 if extractive else len(jobs), errors
 
 
 def format_findings(plan: ResearchPlan, findings: list[Finding]) -> str:
@@ -174,10 +178,16 @@ def compose(
     conflicts: list[Conflict],
     gaps: list[Gap],
     pool: EvidencePool,
+    *,
+    extractive: bool = False,
 ) -> dict[str, Any] | None:
     """Write the answer from the fact list. None means the caller should abstain."""
     if not findings:
         return None
+
+    if extractive:
+        facts = [Fact(text=f.text, citation=f.label) for f in findings]
+        return extractive_compose(facts, gaps=[g.aspect for g in gaps])
 
     by_label = pool.by_label()
     sections = [

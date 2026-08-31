@@ -64,6 +64,15 @@ h1 {
 .health .on { color: var(--ok); }
 .health .off { color: var(--muted); }
 
+.banner {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  background: #ebe4d6;
+  border-left: 3px solid var(--accent);
+  color: var(--ink);
+  font-size: 13px;
+}
+
 .modes {
   display: flex;
   gap: 2px;

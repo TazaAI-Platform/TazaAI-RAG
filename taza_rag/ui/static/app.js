@@ -1,3 +1,19 @@
+const DEMO_EXAMPLES = [
+  { intent: "entity", q: "SoftBank Group" },
+  { intent: "topical", q: "private credit market trends" },
+  { intent: "executive", q: "Jerome Powell" },
+  { intent: "entity", q: "Deutche Bank restructuring" },
+  { intent: "executive", q: "Andy Jassy AWS growth strategy" },
+  { intent: "topical", q: "EU AI Act compliance" },
+];
+
+const DEMO_RESEARCH_EXAMPLES = [
+  { intent: "exposure", q: "How exposed is SoftBank Group to its AI bets, and what do its own numbers say?" },
+  { intent: "cost", q: "What is Deutsche Bank restructuring, and what has it cost so far?" },
+  { intent: "risk", q: "Why is private credit under scrutiny, and what are the specific risks?" },
+  { intent: "policy", q: "What does EU AI Act compliance require of boards?" },
+];
+
 const EXAMPLES = [
   { intent: "entity", q: "SoftBank Group" },
   { intent: "topical", q: "private credit market trends" },
@@ -44,7 +60,7 @@ const RAIL = {
   ],
 };
 
-const state = { legend: { scores: [], tiers: [] }, run: null, openai: false, mode: "retrieve", grantId: "" };
+const state = { legend: { scores: [], tiers: [] }, run: null, openai: false, demo: false, mode: "retrieve", grantId: "" };
 
 const $ = (id) => document.getElementById(id);
 
@@ -64,21 +80,47 @@ async function boot() {
   renderRail("plan");
   try {
     const health = await get("/api/health");
+    state.demo = !!health.demo;
+    state.openai = !!health.openai || state.demo;
     document.querySelectorAll("#health dd").forEach((dd) => {
+      if (dd.dataset.k === "demo") {
+        dd.textContent = state.demo ? "sample corpus" : "live";
+        dd.className = "on";
+        return;
+      }
+      if (dd.dataset.k === "factiva") {
+        dd.textContent = state.demo ? "sample corpus" : health.factiva ? "configured" : "missing";
+        dd.className = state.demo || health.factiva ? "on" : "off";
+        return;
+      }
+      if (dd.dataset.k === "openai") {
+        dd.textContent = health.openai ? "configured" : state.demo ? "extractive" : "missing";
+        dd.className = health.openai || state.demo ? "on" : "off";
+        return;
+      }
       const on = health[dd.dataset.k];
       dd.textContent = on ? "configured" : "missing";
       dd.className = on ? "on" : "off";
     });
-    state.openai = !!health.openai;
+    if (state.demo) show($("demo-banner"));
+    else hide($("demo-banner"));
     syncButtons(false);
     state.legend = await get("/api/legend");
+    paintExamples();
   } catch (err) {
     showStatus(String(err), true);
   }
 }
 
 function paintExamples() {
-  const list = state.mode === "research" ? RESEARCH_EXAMPLES : EXAMPLES;
+  const list =
+    state.mode === "research"
+      ? state.demo
+        ? DEMO_RESEARCH_EXAMPLES
+        : RESEARCH_EXAMPLES
+      : state.demo
+        ? DEMO_EXAMPLES
+        : EXAMPLES;
   $("examples").innerHTML =
     `<span class="lead">Try</span>` +
     list

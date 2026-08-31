@@ -278,9 +278,9 @@ def research_payload(result: Any) -> dict[str, Any]:
     return data
 
 
-def health_payload(*, factiva: bool, openai: bool) -> dict[str, Any]:
+def health_payload(*, factiva: bool, openai: bool, demo: bool = False) -> dict[str, Any]:
     """Booleans only. Client ids and keys must never appear here."""
-    return {"factiva": factiva, "openai": openai}
+    return {"factiva": factiva, "openai": openai, "demo": bool(demo)}
 
 
 def _verification(raw: dict[str, Any] | None) -> dict[str, Any] | None:

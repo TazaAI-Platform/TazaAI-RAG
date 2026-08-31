@@ -114,6 +114,46 @@ def filter_facts(facts: list[Fact], evidence: dict[str, str]) -> list[Fact]:
     return kept
 
 
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def first_sentences(text: str, n: int = 2) -> list[str]:
+    """Lead sentences of a passage. Used when no writer model is configured."""
+    blob = " ".join((text or "").split())
+    if not blob:
+        return []
+    parts = [p.strip() for p in _SENTENCE.split(blob) if p.strip()]
+    return parts[:n] or [blob[:280]]
+
+
+def extractive_facts(evidence: dict[str, str], *, per_source: int = 2) -> list[Fact]:
+    """Cite the lead of each source. Every figure already lives in the excerpt."""
+    facts: list[Fact] = []
+    for label, blob in evidence.items():
+        body = blob.split("\n", 1)[-1] if blob else ""
+        for sent in first_sentences(body, per_source):
+            facts.append(Fact(text=sent, citation=label))
+    return filter_facts(facts, evidence)
+
+
+def extractive_compose(facts: list[Fact], *, gaps: list[str] | None = None) -> dict[str, Any]:
+    """Join grounded sentences. No model, so nothing is paraphrased or invented."""
+    if not facts:
+        return {"answer": "", "abstain": True, "used_citations": []}
+    parts = [f"{fact.text.rstrip(' .')} [{fact.citation}]." for fact in facts]
+    answer = " ".join(parts)
+    if gaps:
+        missing = "; ".join(g for g in gaps if g)
+        if missing:
+            answer += f" The sources do not cover: {missing}."
+    answer = splice_unused_facts(answer, facts)
+    return {
+        "answer": answer,
+        "abstain": False,
+        "used_citations": _labels_in(answer) or [f.citation for f in facts],
+    }
+
+
 def format_fact_list(facts: list[Fact]) -> str:
     lines = []
     for i, fact in enumerate(facts, start=1):

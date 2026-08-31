@@ -78,6 +78,7 @@ MODULES = [
     "tests.test_market",
     "tests.test_ui",
     "tests.test_mcp_server",
+    "tests.test_demo",
     "tests.test_smoke",
 ]
 

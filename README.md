@@ -557,6 +557,7 @@ taza-rag factiva-auth --account rag
 # Primary: quality retrieval (no OpenAI)
 taza-rag retrieve "SoftBank Group"
 taza-rag ui                         # query playground: query → packages → transact → fetch
+taza-rag ui --demo --host 0.0.0.0   # hosted client demo on the sample corpus (no Factiva key)
 taza-rag ui --host 0.0.0.0          # LAN / tunnel. Set UI_SHARE_TOKEN so POSTs need a token.
 taza-rag mcp                        # agent-facing marketplace (query / transact / fetch_content)
 taza-rag research "..."             # Option 2 multi-step agent — see AGENT.md

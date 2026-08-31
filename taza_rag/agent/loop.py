@@ -51,6 +51,7 @@ def research(
     use_llm_plan: bool = True,
     verify: bool = True,
     workers: int = 4,
+    extractive: bool = False,
 ) -> ResearchResult:
     """Answer a complex question from the corpus, or explain what is missing."""
     budget = budget or Budget()
@@ -59,7 +60,9 @@ def research(
     t_start = time.perf_counter()
 
     result.plan = plan or make_plan(
-        question, max_sub_questions=budget.max_sub_questions, use_llm=use_llm_plan
+        question,
+        max_sub_questions=budget.max_sub_questions,
+        use_llm=use_llm_plan and not extractive,
     )
     if result.plan.method == "llm":
         cost.llm_calls += 1
@@ -115,7 +118,13 @@ def research(
         result.latency_ms = _timings(t_start, t_plan, t_gather, t_gather, t_gather)
         return result
 
-    new, calls, errors = extract_findings(result.plan, pool, result.plan.sub_questions, round_index=0)
+    new, calls, errors = extract_findings(
+        result.plan,
+        pool,
+        result.plan.sub_questions,
+        round_index=0,
+        extractive=extractive,
+    )
     cost.llm_calls += calls
     result.errors.extend(errors)
     findings.extend(new)
@@ -173,7 +182,11 @@ def research(
 
         if record.new_chunks and touched:
             new, calls, errors = extract_findings(
-                result.plan, pool, list(touched.values()), round_index=record.index
+                result.plan,
+                pool,
+                list(touched.values()),
+                round_index=record.index,
+                extractive=extractive,
             )
             cost.llm_calls += calls
             result.errors.extend(errors)
@@ -204,8 +217,16 @@ def research(
     raw: dict[str, Any] | None = None
     if findings:
         try:
-            raw = compose(result.plan, findings, result.conflicts, result.gaps, pool)
-            cost.llm_calls += 1
+            raw = compose(
+                result.plan,
+                findings,
+                result.conflicts,
+                result.gaps,
+                pool,
+                extractive=extractive,
+            )
+            if not extractive:
+                cost.llm_calls += 1
         except LLMError as e:
             result.errors.append(f"compose failed: {type(e).__name__}: {e}")
 
@@ -218,7 +239,7 @@ def research(
     answer_text = str(raw.get("answer") or "")
     abstained = bool(raw.get("abstain"))
 
-    if verify and answer_text and not abstained:
+    if verify and not extractive and answer_text and not abstained:
         evidence = pool.evidence_by_label()
         context = pool.context_for(pool.items, max_tokens=settings.answer_context_tokens)
         answer_text, abstained, raw, verification = _verify_and_repair(
@@ -234,7 +255,9 @@ def research(
 
     result.answer = answer_text
     result.abstained = abstained
-    result.config_name = f"research_v1+{result.plan.method}" + ("+verified" if verify else "")
+    result.config_name = f"research_v1+{result.plan.method}" + (
+        "+extractive" if extractive else "+verified" if verify else ""
+    )
     result.latency_ms = _timings(t_start, t_plan, t_gather, t_assess, time.perf_counter())
     return result
 

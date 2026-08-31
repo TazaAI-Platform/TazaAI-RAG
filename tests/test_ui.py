@@ -82,7 +82,8 @@ def test_run_payload_carries_the_funnel_not_credentials():
 
 def test_health_is_booleans_only():
     payload = health_payload(factiva=True, openai=False)
-    assert payload == {"factiva": True, "openai": False}
+    assert payload == {"factiva": True, "openai": False, "demo": False}
+    assert health_payload(factiva=False, openai=False, demo=True)["demo"] is True
 
 
 def test_score_legend_names_every_meter_the_cli_prints():
@@ -271,12 +272,17 @@ def test_a_share_token_blocks_unauthed_posts():
     handler = UiHandler.__new__(UiHandler)
     handler.server = type("S", (), {"ui_token": "secret"})()
     handler.headers = {}
+    handler.path = "/api/query"
     assert handler._authed() is False
     handler.headers = {"X-UI-Token": "wrong"}
     assert handler._authed() is False
     handler.headers = {"X-UI-Token": "secret"}
     assert handler._authed() is True
+    handler.headers = {}
+    handler.path = "/api/query?token=secret"
+    assert handler._authed() is True
     handler.server = type("S", (), {"ui_token": ""})()
+    handler.path = "/api/query"
     handler.headers = {}
     assert handler._authed() is True
 

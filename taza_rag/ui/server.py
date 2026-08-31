@@ -6,7 +6,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from taza_rag.config import settings
 from taza_rag.factiva.answer import answer_with_factiva
@@ -53,11 +53,14 @@ class UiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/health":
+            demo = bool(getattr(self.server, "demo", False))
             self._json(
                 200,
                 health_payload(
-                    factiva=bool(settings.factiva_rag_username and settings.factiva_rag_password),
+                    factiva=bool(settings.factiva_rag_username and settings.factiva_rag_password)
+                    and not demo,
                     openai=bool(settings.openai_api_key),
+                    demo=demo,
                 ),
             )
             return
@@ -151,7 +154,11 @@ class UiHandler(BaseHTTPRequestHandler):
         token = (getattr(self.server, "ui_token", None) or settings.ui_share_token or "").strip()
         if not token:
             return True
-        return (self.headers.get("X-UI-Token") or "") == token
+        if (self.headers.get("X-UI-Token") or "") == token:
+            return True
+        query = parse_qs(urlparse(self.path).query)
+        offered = (query.get("token") or [""])[0]
+        return offered == token
 
     def _market(self) -> Market:
         existing = getattr(self.server, "market", None)
@@ -301,24 +308,52 @@ def make_server(
     answer_fn: Callable[..., dict[str, Any]] | None = None,
     research_fn: Callable[..., dict[str, Any]] | None = None,
     query_fn: Callable[..., dict[str, Any]] | None = None,
+    write_fn: Callable[..., dict[str, Any]] | None = None,
     market: Market | None = None,
+    demo: bool = False,
+    ui_token: str | None = None,
 ) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), UiHandler)
     httpd.retrieve_fn = retrieve_fn  # type: ignore[attr-defined]
     httpd.answer_fn = answer_fn  # type: ignore[attr-defined]
     httpd.research_fn = research_fn  # type: ignore[attr-defined]
     httpd.query_fn = query_fn  # type: ignore[attr-defined]
+    httpd.write_fn = write_fn  # type: ignore[attr-defined]
     httpd.market = market if market is not None else Market()  # type: ignore[attr-defined]
-    httpd.ui_token = (settings.ui_share_token or "").strip()  # type: ignore[attr-defined]
+    httpd.demo = demo  # type: ignore[attr-defined]
+    token = ui_token if ui_token is not None else (settings.ui_share_token or "").strip()
+    httpd.ui_token = (token or "").strip()  # type: ignore[attr-defined]
     return httpd
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
-    httpd = make_server(host, port)
-    shown = f"http://127.0.0.1:{port}" if host in {"0.0.0.0", "::"} else f"http://{host}:{port}"
-    print(f"Taza RAG UI  {shown}  (Ctrl-C to stop)", flush=True)
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    *,
+    demo: bool | None = None,
+    share_token: str | None = None,
+) -> None:
+    import secrets
+
+    hosted = host in {"0.0.0.0", "::"}
+    if demo is None:
+        demo = not bool(settings.factiva_rag_username and settings.factiva_rag_password)
+    token = (share_token if share_token is not None else settings.ui_share_token or "").strip()
+    if hosted and not token:
+        token = secrets.token_urlsafe(12)
+
+    kwargs: dict[str, Any] = {"demo": demo, "ui_token": token}
+    if demo:
+        from taza_rag.demo import demo_handlers
+
+        kwargs.update(demo_handlers())
+
+    httpd = make_server(host, port, **kwargs)
+    shown = f"http://127.0.0.1:{port}" if hosted else f"http://{host}:{port}"
+    mode = "demo corpus" if demo else "Factiva"
+    print(f"Taza RAG UI  {shown}  ({mode})  (Ctrl-C to stop)", flush=True)
     if httpd.ui_token:
-        print("POSTs require X-UI-Token (open with ?token=...)", flush=True)
+        print(f"POSTs require X-UI-Token. Open {shown}/?token={httpd.ui_token}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

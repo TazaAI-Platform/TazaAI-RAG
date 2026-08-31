@@ -549,6 +549,11 @@ def ui_cmd(
         None, help="Bind address. Default 127.0.0.1; 0.0.0.0 if PORT is set (hosted)."
     ),
     port: Optional[int] = typer.Option(None, help="Port. Default 8765, or $PORT when hosted."),
+    demo: Optional[bool] = typer.Option(
+        None,
+        "--demo/--live",
+        help="Sample-corpus playground (default when Factiva credentials are missing).",
+    ),
 ) -> None:
     """Query playground: ask the marketplace, pick a package, fetch licensed content."""
     import os
@@ -558,7 +563,7 @@ def ui_cmd(
     env_port = os.environ.get("PORT")
     bind_host = host or os.environ.get("HOST") or ("0.0.0.0" if env_port else "127.0.0.1")
     bind_port = port or int(env_port or 8765)
-    serve(bind_host, bind_port)
+    serve(bind_host, bind_port, demo=demo)
 
 
 @app.command()
