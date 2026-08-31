@@ -1,3 +1,4 @@
+# Secrets — never commit. Copy .env.example to .env locally.
 .env
 .env.*
 !.env.example
